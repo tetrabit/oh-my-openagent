@@ -8,6 +8,7 @@ import {
   createSessionNotification,
   createThinkModeHook,
   createModelFallbackHook,
+  createContextWindowFallbackHook,
   createAnthropicContextWindowLimitRecoveryHook,
   createAutoUpdateCheckerHook,
   createAgentUsageReminderHook,
@@ -43,6 +44,7 @@ export type SessionHooks = {
   sessionNotification: ReturnType<typeof createSessionNotification> | null
   thinkMode: ReturnType<typeof createThinkModeHook> | null
   modelFallback: ReturnType<typeof createModelFallbackHook> | null
+  contextWindowFallback: ReturnType<typeof createContextWindowFallbackHook> | null
   anthropicContextWindowLimitRecovery: ReturnType<typeof createAnthropicContextWindowLimitRecoveryHook> | null
   autoUpdateChecker: ReturnType<typeof createAutoUpdateCheckerHook> | null
   agentUsageReminder: ReturnType<typeof createAgentUsageReminderHook> | null
@@ -173,6 +175,10 @@ export function createSessionHooks(args: {
       }))
     : null
 
+  const contextWindowFallback = isHookEnabled("context-window-fallback")
+    ? safeHook("context-window-fallback", () => createContextWindowFallbackHook(ctx))
+    : null
+
   const anthropicContextWindowLimitRecovery = isHookEnabled("anthropic-context-window-limit-recovery")
     ? safeHook("anthropic-context-window-limit-recovery", () =>
         createAnthropicContextWindowLimitRecoveryHook(ctx, { experimental: pluginConfig.experimental, pluginConfig }))
@@ -287,6 +293,7 @@ export function createSessionHooks(args: {
     sessionNotification,
     thinkMode,
     modelFallback,
+    contextWindowFallback,
     anthropicContextWindowLimitRecovery,
     autoUpdateChecker,
     agentUsageReminder,

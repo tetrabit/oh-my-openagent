@@ -13,6 +13,7 @@ export const HookNameSchema = z.enum([
   "empty-task-response-detector",
   "think-mode",
   "model-fallback",
+  "context-window-fallback",
   "anthropic-context-window-limit-recovery",
   "preemptive-compaction",
   "rules-injector",
