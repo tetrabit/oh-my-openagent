@@ -1,16 +1,35 @@
-.git-backups/
+# Dependencies
 .sisyphus/
+node_modules/
 
-**/node_modules/
-**/dist/
-**/.turbo/
-**/.cache/
-**/logs/
+# Build output
+dist/
 
-**/.env
-**/.env.*
+# Platform binaries (built, not committed)
+packages/*/bin/oh-my-opencode
+packages/*/bin/oh-my-opencode.exe
 
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
 .DS_Store
-*.log
+Thumbs.db
 
-**/.opencode/background-tasks.json
+# Logs
+*.log
+npm-debug.log*
+
+# Lock files (use bun.lockb instead)
+package-lock.json
+yarn.lock
+
+# Environment
+.env
+.env.local
+test-injection/
+notepad.md
+oauth-success.html
