@@ -1,0 +1,16 @@
+.git-backups/
+.sisyphus/
+
+**/node_modules/
+**/dist/
+**/.turbo/
+**/.cache/
+**/logs/
+
+**/.env
+**/.env.*
+
+.DS_Store
+*.log
+
+**/.opencode/background-tasks.json
