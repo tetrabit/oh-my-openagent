@@ -220,6 +220,10 @@ for target in "${PLUGIN_TARGETS[@]}"; do
   if [[ -f "$PLUGIN_DIR/postinstall.mjs" ]]; then
     install -m 0644 "$PLUGIN_DIR/postinstall.mjs" "$target/postinstall.mjs"
   fi
+  
+  # Ensure production dependencies for the CLI wrapper are installed
+  log "Installing production dependencies for $target"
+  (cd "$target" && npm install --production --silent)
 done
 
 RUNTIME_STATE_DIR="$HOME/.opencode"
