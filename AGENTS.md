@@ -1,5 +1,10 @@
 # PROJECT KNOWLEDGE BASE
 
+## MANDATORY: Use td for Task Management
+
+You must run td usage --new-session at conversation start (or after /clear) to see current work.
+Use td usage -q for subsequent reads.
+
 **Generated:** 2026-01-25T13:10:00+09:00
 **Commit:** 043b1a33
 **Branch:** dev

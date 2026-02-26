@@ -55,6 +55,7 @@ export const AgentNameSchema = BuiltinAgentNameSchema
 export const HookNameSchema = z.enum([
   "todo-continuation-enforcer",
   "context-window-monitor",
+  "context-window-fallback",
   "session-recovery",
   "session-notification",
   "comment-checker",

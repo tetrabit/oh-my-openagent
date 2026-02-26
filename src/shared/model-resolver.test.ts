@@ -1,5 +1,13 @@
 import { describe, expect, test, spyOn, beforeEach, afterEach } from "bun:test"
-import { resolveModel, resolveModelWithFallback, type ModelResolutionInput, type ExtendedModelResolutionInput, type ModelResolutionResult, type ModelSource } from "./model-resolver"
+import {
+  resolveModel,
+  resolveModelWithFallback,
+  resolveRuntimeFallback,
+  type ModelResolutionInput,
+  type ExtendedModelResolutionInput,
+  type ModelResolutionResult,
+  type ModelSource,
+} from "./model-resolver"
 import * as logger from "./logger"
 
 describe("resolveModel", () => {
@@ -468,5 +476,62 @@ describe("resolveModelWithFallback", () => {
       expect(typeof result.model).toBe("string")
       expect(["override", "provider-fallback", "system-default"]).toContain(result.source)
     })
+  })
+})
+
+describe("resolveRuntimeFallback", () => {
+  test("skips current provider on first pass for rate_limit and picks alternate provider", () => {
+    // #given
+    const result = resolveRuntimeFallback({
+      currentModel: "anthropic/claude-opus-4-6",
+      fallbackChain: [
+        { providers: ["anthropic"], model: "claude-opus-4-5" },
+        { providers: ["openai"], model: "gpt-5.2" },
+      ],
+      availableModels: new Set([
+        "anthropic/claude-opus-4-6",
+        "openai/gpt-5.2",
+      ]),
+      triedModels: new Set(["anthropic/claude-opus-4-6"]),
+      reason: "rate_limit",
+    })
+
+    // #when / #then
+    expect(result?.model).toBe("openai/gpt-5.2")
+  })
+
+  test("allows same provider on second pass for rate_limit when no alternatives match", () => {
+    // #given
+    const result = resolveRuntimeFallback({
+      currentModel: "anthropic/claude-opus-4-6",
+      fallbackChain: [
+        { providers: ["anthropic"], model: "claude-opus-4-5" },
+      ],
+      availableModels: new Set([
+        "anthropic/claude-opus-4-5",
+      ]),
+      triedModels: new Set(["anthropic/claude-opus-4-6"]),
+      reason: "rate_limit",
+    })
+
+    // #when / #then
+    expect(result?.model).toBe("anthropic/claude-opus-4-5")
+  })
+
+  test("prefers different provider for rate_limit even when availableModels is empty", () => {
+    // #given
+    const result = resolveRuntimeFallback({
+      currentModel: "anthropic/claude-opus-4-6",
+      fallbackChain: [
+        { providers: ["anthropic"], model: "claude-opus-4-5" },
+        { providers: ["openai"], model: "gpt-5.2" },
+      ],
+      availableModels: new Set(),
+      triedModels: new Set(["anthropic/claude-opus-4-6"]),
+      reason: "rate_limit",
+    })
+
+    // #when / #then
+    expect(result?.model).toBe("openai/gpt-5.2")
   })
 })

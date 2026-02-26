@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import {
   createTodoContinuationEnforcer,
   createContextWindowMonitorHook,
+  createContextWindowFallbackHook,
   createSessionRecoveryHook,
   createSessionNotification,
   createCommentCheckerHooks,
@@ -93,6 +94,9 @@ const OhMyOpenCodePlugin: Plugin = async (ctx) => {
 
   const contextWindowMonitor = isHookEnabled("context-window-monitor")
     ? createContextWindowMonitorHook(ctx)
+    : null;
+  const contextWindowFallback = isHookEnabled("context-window-fallback")
+    ? createContextWindowFallbackHook(ctx)
     : null;
   const sessionRecovery = isHookEnabled("session-recovery")
     ? createSessionRecoveryHook(ctx, { experimental: pluginConfig.experimental })
@@ -416,7 +420,10 @@ const OhMyOpenCodePlugin: Plugin = async (ctx) => {
       await directoryReadmeInjector?.event(input);
       await rulesInjector?.event(input);
       await thinkMode?.event(input);
-      await anthropicContextWindowLimitRecovery?.event(input);
+      const fallbackHandled = await contextWindowFallback?.event(input);
+      if (!fallbackHandled) {
+        await anthropicContextWindowLimitRecovery?.event(input);
+      }
       await agentUsageReminder?.event(input);
       await interactiveBashSession?.event(input);
       await ralphLoop?.event(input);

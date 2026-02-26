@@ -12,9 +12,12 @@ OPENCODE_BIN_DST="$HOME/.opencode/bin/opencode"
 CACHE_PLUGIN_DST="$HOME/.cache/opencode/node_modules/oh-my-opencode"
 LOCAL_PLUGIN_DST="$HOME/.opencode/node_modules/oh-my-opencode"
 PATCH_DISPLAY_VERSION="1.2.11-nullpatch"
+USER_CONFIG_SRC="$ROOT_DIR/oh-my-opencode.json"
+USER_CONFIG_DST="$HOME/.config/opencode/oh-my-opencode.json"
 
 SKIP_BUILD=0
 NO_BACKUP=0
+WITH_CONFIG=0
 
 usage() {
   cat <<'EOF'
@@ -25,10 +28,11 @@ Build and install patched OpenCode + oh-my-opencode into the current user's home
 Options:
   --skip-build   Skip build steps and install existing artifacts.
   --no-backup    Overwrite without creating timestamped backups.
+  --with-config  Also overwrite ~/.config/opencode/oh-my-opencode.json.
   --help         Show this help message.
 
 Notes:
-  - This script does NOT modify files under ~/.config/opencode.
+  - By default this script does NOT modify files under ~/.config/opencode.
   - It overwrites ~/.opencode/bin/opencode and plugin dist directories.
 EOF
 }
@@ -117,6 +121,9 @@ while [[ $# -gt 0 ]]; do
     --no-backup)
       NO_BACKUP=1
       ;;
+    --with-config)
+      WITH_CONFIG=1
+      ;;
     --help|-h)
       usage
       exit 0
@@ -158,6 +165,11 @@ if [[ ! -d "$PLUGIN_DIST_SRC" ]]; then
   exit 1
 fi
 
+if [[ "$WITH_CONFIG" -eq 1 && ! -f "$USER_CONFIG_SRC" ]]; then
+  printf '[install] Missing config source file: %s\n' "$USER_CONFIG_SRC" >&2
+  exit 1
+fi
+
 PLUGIN_TARGETS=("$CACHE_PLUGIN_DST" "$LOCAL_PLUGIN_DST")
 
 BIN_TARGETS=("$OPENCODE_BIN_DST")
@@ -190,6 +202,9 @@ if [[ "$NO_BACKUP" -eq 0 ]]; then
     backup_path "$target/package.json" "$BACKUP_DIR"
     backup_path "$target/postinstall.mjs" "$BACKUP_DIR"
   done
+  if [[ "$WITH_CONFIG" -eq 1 ]]; then
+    backup_path "$USER_CONFIG_DST" "$BACKUP_DIR"
+  fi
 fi
 
 for bin_target in "${BIN_TARGETS[@]}"; do
@@ -226,6 +241,12 @@ for target in "${PLUGIN_TARGETS[@]}"; do
   (cd "$target" && npm install --production --silent)
 done
 
+if [[ "$WITH_CONFIG" -eq 1 ]]; then
+  log "Installing config to $USER_CONFIG_DST"
+  mkdir -p "$(dirname "$USER_CONFIG_DST")"
+  install -m 0644 "$USER_CONFIG_SRC" "$USER_CONFIG_DST"
+fi
+
 RUNTIME_STATE_DIR="$HOME/.opencode"
 RUNTIME_PACKAGE_JSON="$RUNTIME_STATE_DIR/package.json"
 CACHE_STATE_DIR="$HOME/.cache/opencode"
@@ -261,7 +282,11 @@ EOF
 log "Updated runtime package metadata with @opencode-ai/plugin@$RUNTIME_PLUGIN_VERSION"
 
 log "Install complete"
-log "Config files were left untouched under ~/.config/opencode"
+if [[ "$WITH_CONFIG" -eq 1 ]]; then
+  log "Config updated: $USER_CONFIG_DST"
+else
+  log "Config files were left untouched under ~/.config/opencode"
+fi
 
 EXPECTED_VERSION="$($OPENCODE_BIN_SRC --version)"
 for bin_target in "${BIN_TARGETS[@]}"; do
