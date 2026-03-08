@@ -9,6 +9,7 @@ import { normalizeSDKResponse } from "../../shared"
 import { log } from "../../shared/logger"
 import { getAvailableModelsForDelegateTask } from "./available-models"
 import type { FallbackEntry } from "../../shared/model-requirements"
+import { resolveConfiguredFallbackChain } from "../../shared/model-resolver"
 import { resolveModelForDelegateTask } from "./model-selection"
 
 export async function resolveSubagentExecution(
@@ -17,7 +18,7 @@ export async function resolveSubagentExecution(
   parentAgent: string | undefined,
   categoryExamples: string
 ): Promise<{ agentToUse: string; categoryModel: { providerID: string; modelID: string; variant?: string } | undefined; fallbackChain?: FallbackEntry[]; error?: string }> {
-  const { client, agentOverrides } = executorCtx
+  const { client, agentOverrides, userCategories } = executorCtx
 
   if (!args.subagent_type?.trim()) {
     return { agentToUse: "", categoryModel: undefined, error: `Agent name cannot be empty.` }
@@ -94,7 +95,13 @@ Create the work plan directly - that's your job as the planning agent.`,
     const agentOverride = agentOverrides?.[agentConfigKey as keyof typeof agentOverrides]
       ?? (agentOverrides ? Object.entries(agentOverrides).find(([key]) => key.toLowerCase() === agentConfigKey)?.[1] : undefined)
     const agentRequirement = AGENT_MODEL_REQUIREMENTS[agentConfigKey]
-    fallbackChain = agentRequirement?.fallbackChain
+    fallbackChain = resolveConfiguredFallbackChain({
+      configuredFallbackModels: agentOverride?.fallback_models,
+      categoryConfiguredFallbackModels: agentOverride?.category
+        ? userCategories?.[agentOverride.category]?.fallback_models
+        : undefined,
+      defaultFallbackChain: agentRequirement?.fallbackChain,
+    })
 
     if (agentOverride?.model || agentRequirement || matchedAgent.model) {
       const availableModels = await getAvailableModelsForDelegateTask(client)
@@ -106,7 +113,7 @@ Create the work plan directly - that's your job as the planning agent.`,
       const resolution = resolveModelForDelegateTask({
         userModel: agentOverride?.model,
         categoryDefaultModel: matchedAgentModelStr,
-        fallbackChain: agentRequirement?.fallbackChain,
+        fallbackChain,
         availableModels,
         systemDefaultModel: undefined,
       })

@@ -2,6 +2,7 @@ import { tool, type PluginInput, type ToolDefinition } from "@opencode-ai/plugin
 import { ALLOWED_AGENTS, CALL_OMO_AGENT_DESCRIPTION } from "./constants"
 import type { AllowedAgentType, CallOmoAgentArgs, ToolContextWithMetadata } from "./types"
 import type { BackgroundManager } from "../../features/background-agent"
+import type { AgentOverrides, CategoriesConfig } from "../../config/schema"
 import { log } from "../../shared"
 import { executeBackground } from "./background-executor"
 import { executeSync } from "./sync-executor"
@@ -9,7 +10,9 @@ import { executeSync } from "./sync-executor"
 export function createCallOmoAgent(
   ctx: PluginInput,
   backgroundManager: BackgroundManager,
-  disabledAgents: string[] = []
+  disabledAgents: string[] = [],
+  agentOverrides?: AgentOverrides,
+  userCategories?: CategoriesConfig,
 ): ToolDefinition {
   const agentDescriptions = ALLOWED_AGENTS.map(
     (name) => `- ${name}: Specialized agent for ${name} tasks`
@@ -57,7 +60,10 @@ export function createCallOmoAgent(
         return await executeBackground(args, toolCtx, backgroundManager, ctx.client)
       }
 
-      return await executeSync(args, toolCtx, ctx)
+      return await executeSync(args, toolCtx, ctx, undefined, {
+        agentOverrides,
+        userCategories,
+      })
     },
   })
 }

@@ -1,25 +1,38 @@
 import type { CallOmoAgentArgs } from "./types"
+import type { AgentOverrides, CategoriesConfig } from "../../config/schema"
+import type { FallbackEntry } from "../../shared/model-requirements"
 import type { PluginInput } from "@opencode-ai/plugin"
 import { log } from "../../shared"
 import { getAgentToolRestrictions } from "../../shared"
 import { createOrGetSession } from "./session-creator"
 import { waitForCompletion } from "./completion-poller"
 import { processMessages } from "./message-processor"
-
-type SessionWithPromptAsync = {
-  promptAsync: (opts: { path: { id: string }; body: Record<string, unknown> }) => Promise<unknown>
-}
+import { promptWithModelSuggestionRetry } from "../../shared/model-suggestion-retry"
+import { sendPromptWithFallbackRetry } from "../../shared/prompt-fallback-retry"
+import { getAgentConfigKey } from "../../shared/agent-display-names"
+import { setSessionModel } from "../../shared/session-model-state"
+import { setSessionAgent } from "../../features/claude-code-session-state"
+import { setSessionFallbackChain } from "../../hooks/model-fallback/hook"
+import { resolveConfiguredFallbackChain } from "../../shared/model-resolver"
 
 type ExecuteSyncDeps = {
   createOrGetSession: typeof createOrGetSession
   waitForCompletion: typeof waitForCompletion
   processMessages: typeof processMessages
+  promptWithModelSuggestionRetry?: typeof promptWithModelSuggestionRetry
 }
 
 const defaultDeps: ExecuteSyncDeps = {
   createOrGetSession,
   waitForCompletion,
   processMessages,
+  promptWithModelSuggestionRetry,
+}
+
+type ExecuteSyncOptions = {
+  agentOverrides?: AgentOverrides
+  userCategories?: CategoriesConfig
+  fallbackChain?: FallbackEntry[]
 }
 
 export async function executeSync(
@@ -32,9 +45,20 @@ export async function executeSync(
     metadata?: (input: { title?: string; metadata?: Record<string, unknown> }) => void
   },
   ctx: PluginInput,
-  deps: ExecuteSyncDeps = defaultDeps
+  deps: ExecuteSyncDeps = defaultDeps,
+  options: ExecuteSyncOptions = {},
 ): Promise<string> {
   const { sessionID } = await deps.createOrGetSession(args, toolContext, ctx)
+  const agentConfigKey = getAgentConfigKey(args.subagent_type)
+  const agentOverride = options.agentOverrides?.[agentConfigKey as keyof typeof options.agentOverrides]
+  const fallbackChain = options.fallbackChain ?? resolveConfiguredFallbackChain({
+    configuredFallbackModels: agentOverride?.fallback_models,
+    categoryConfiguredFallbackModels: agentOverride?.category
+      ? options.userCategories?.[agentOverride.category]?.fallback_models
+      : undefined,
+  })
+  setSessionAgent(sessionID, args.subagent_type)
+  setSessionFallbackChain(sessionID, fallbackChain)
 
   await toolContext.metadata?.({
     title: args.description,
@@ -45,18 +69,29 @@ export async function executeSync(
   log(`[call_omo_agent] Prompt text:`, args.prompt.substring(0, 100))
 
   try {
-    await (ctx.client.session as unknown as SessionWithPromptAsync).promptAsync({
-      path: { id: sessionID },
-      body: {
-        agent: args.subagent_type,
-        tools: {
-          ...getAgentToolRestrictions(args.subagent_type),
-          task: false,
-          question: false,
+    const promptResult = await sendPromptWithFallbackRetry({
+      promptArgs: {
+        path: { id: sessionID },
+        body: {
+          agent: args.subagent_type,
+          tools: {
+            ...getAgentToolRestrictions(args.subagent_type),
+            task: false,
+            question: false,
+          },
+          parts: [{ type: "text", text: args.prompt }],
         },
-        parts: [{ type: "text", text: args.prompt }],
       },
+      fallbackChain,
+      sendPrompt: (nextPromptArgs) =>
+        (deps.promptWithModelSuggestionRetry ?? promptWithModelSuggestionRetry)(ctx.client as any, nextPromptArgs),
     })
+    if (promptResult.usedFallback && promptResult.providerID && promptResult.modelID) {
+      setSessionModel(sessionID, {
+        providerID: promptResult.providerID,
+        modelID: promptResult.modelID,
+      })
+    }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
     log(`[call_omo_agent] Prompt error:`, errorMessage)

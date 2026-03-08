@@ -311,6 +311,39 @@ describe("Plan agent demote behavior", () => {
     expect(agents[prometheusKey]).toBeDefined()
     expect(agents[prometheusKey].mode).toBe("all")
   })
+
+  test("preserves the original build agent as a visible primary agent", async () => {
+    // given
+    const pluginConfig: OhMyOpenCodeConfig = {}
+    const config: Record<string, unknown> = {
+      model: "anthropic/claude-opus-4-6",
+      agent: {
+        build: {
+          name: "build",
+          mode: "primary",
+          description: "Original build agent",
+        },
+      },
+    }
+    const handler = createConfigHandler({
+      ctx: { directory: "/tmp" },
+      pluginConfig,
+      modelCacheState: {
+        anthropicContext1MEnabled: false,
+        modelContextLimitsCache: new Map(),
+      },
+    })
+
+    // when
+    await handler(config)
+
+    // then
+    const agents = config.agent as Record<string, { mode?: string; hidden?: boolean; description?: string }>
+    expect(agents.build).toBeDefined()
+    expect(agents.build.mode).toBe("primary")
+    expect(agents.build.hidden).not.toBe(true)
+    expect(agents.build.description).toContain("Original build agent")
+  })
 })
 
 describe("Agent permission defaults", () => {

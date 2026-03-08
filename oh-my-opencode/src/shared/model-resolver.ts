@@ -74,6 +74,49 @@ export function normalizeFallbackModels(models: string | string[] | undefined): 
 	return models
 }
 
+function fallbackModelToEntry(model: string): FallbackEntry | undefined {
+	const trimmed = model.trim()
+	if (!trimmed) return undefined
+
+	const slashIndex = trimmed.indexOf("/")
+	if (slashIndex <= 0 || slashIndex === trimmed.length - 1) {
+		return undefined
+	}
+
+	return {
+		providers: [trimmed.slice(0, slashIndex)],
+		model: trimmed.slice(slashIndex + 1),
+	}
+}
+
+export function resolveConfiguredFallbackChain(input: {
+	configuredFallbackModels?: string | string[]
+	categoryConfiguredFallbackModels?: string | string[]
+	defaultFallbackChain?: FallbackEntry[]
+}): FallbackEntry[] | undefined {
+	const configuredFallbackModels = normalizeFallbackModels(input.configuredFallbackModels)
+	if (configuredFallbackModels && configuredFallbackModels.length > 0) {
+		const chain = configuredFallbackModels
+			.map(fallbackModelToEntry)
+			.filter((entry): entry is FallbackEntry => entry !== undefined)
+		if (chain.length > 0) {
+			return chain
+		}
+	}
+
+	const categoryConfiguredFallbackModels = normalizeFallbackModels(input.categoryConfiguredFallbackModels)
+	if (categoryConfiguredFallbackModels && categoryConfiguredFallbackModels.length > 0) {
+		const chain = categoryConfiguredFallbackModels
+			.map(fallbackModelToEntry)
+			.filter((entry): entry is FallbackEntry => entry !== undefined)
+		if (chain.length > 0) {
+			return chain
+		}
+	}
+
+	return input.defaultFallbackChain
+}
+
 export interface RuntimeFallbackInput {
   currentModel: { providerID: string; modelID: string }
   agent: string
@@ -123,4 +166,3 @@ export function resolveRuntimeFallback(input: RuntimeFallbackInput): RuntimeFall
 
   return undefined
 }
-

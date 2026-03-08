@@ -1,5 +1,13 @@
 import { describe, expect, test, spyOn, beforeEach, afterEach, mock } from "bun:test"
-import { resolveModel, resolveModelWithFallback, type ModelResolutionInput, type ExtendedModelResolutionInput, type ModelResolutionResult, type ModelSource } from "./model-resolver"
+import {
+  resolveConfiguredFallbackChain,
+  resolveModel,
+  resolveModelWithFallback,
+  type ModelResolutionInput,
+  type ExtendedModelResolutionInput,
+  type ModelResolutionResult,
+  type ModelSource,
+} from "./model-resolver"
 import * as logger from "./logger"
 import * as connectedProvidersCache from "./connected-providers-cache"
 
@@ -944,5 +952,51 @@ describe("resolveModelWithFallback", () => {
       expect(result!.model).toBe("anthropic/claude-opus-4-6")
       expect(result!.source).toBe("provider-fallback")
     })
+  })
+})
+
+describe("resolveConfiguredFallbackChain", () => {
+  test("converts configured fallback_models into ordered fallback entries", () => {
+    // given
+    const configuredFallbackModels = [
+      "openai/gpt-5.2",
+      "github-copilot/gpt-5.2",
+      "opencode/big-pickle",
+    ]
+
+    // when
+    const result = resolveConfiguredFallbackChain({
+      configuredFallbackModels,
+    })
+
+    // then
+    expect(result).toEqual([
+      { providers: ["openai"], model: "gpt-5.2" },
+      { providers: ["github-copilot"], model: "gpt-5.2" },
+      { providers: ["opencode"], model: "big-pickle" },
+    ])
+  })
+
+  test("falls back to category-configured fallback_models when agent override does not define them", () => {
+    // given
+    const categoryConfiguredFallbackModels = [
+      "google/gemini-3-flash-preview",
+      "opencode/big-pickle",
+    ]
+    const defaultFallbackChain = [
+      { providers: ["anthropic"], model: "claude-haiku-4-5" },
+    ]
+
+    // when
+    const result = resolveConfiguredFallbackChain({
+      categoryConfiguredFallbackModels,
+      defaultFallbackChain,
+    })
+
+    // then
+    expect(result).toEqual([
+      { providers: ["google"], model: "gemini-3-flash-preview" },
+      { providers: ["opencode"], model: "big-pickle" },
+    ])
   })
 })

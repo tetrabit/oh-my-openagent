@@ -1657,6 +1657,42 @@ describe("BackgroundManager - Non-blocking Queue Integration", () => {
         expect(task.queuedAt).toBeInstanceOf(Date)
       })
     })
+
+    test("derives fallbackChain from configured agent fallback_models when launch input omits one", async () => {
+      // given
+      manager.shutdown()
+      manager = new BackgroundManager(
+        { client: mockClient, directory: tmpdir() } as unknown as PluginInput,
+        undefined,
+        {
+          agentOverrides: {
+            explore: {
+              fallback_models: [
+                "google/gemini-3-flash-preview",
+                "opencode/big-pickle",
+              ],
+            },
+          },
+        },
+      )
+
+      const input = {
+        description: "Test task",
+        prompt: "Do something",
+        agent: "explore",
+        parentSessionID: "parent-session",
+        parentMessageID: "parent-message",
+      }
+
+      // when
+      const task = await manager.launch(input)
+
+      // then
+      expect(task.fallbackChain).toEqual([
+        { providers: ["google"], model: "gemini-3-flash-preview" },
+        { providers: ["opencode"], model: "big-pickle" },
+      ])
+    })
   })
 
   describe("task transitions pending→running when slot available", () => {

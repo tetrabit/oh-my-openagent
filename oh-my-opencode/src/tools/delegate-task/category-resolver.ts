@@ -3,6 +3,7 @@ import type { DelegateTaskArgs } from "./types"
 import type { ExecutorContext } from "./executor-types"
 import type { FallbackEntry } from "../../shared/model-requirements"
 import { mergeCategories } from "../../shared/merge-categories"
+import { resolveConfiguredFallbackChain } from "../../shared/model-resolver"
 import { SISYPHUS_JUNIOR_AGENT } from "./sisyphus-junior-agent"
 import { resolveCategoryConfig } from "./categories"
 import { parseModelString } from "./model-string-parser"
@@ -147,6 +148,10 @@ Available categories: ${allCategoryNames}`,
     categoryModel = parsedModel ?? undefined
   }
   const categoryPromptAppend = resolved.promptAppend || undefined
+  const fallbackChain = resolveConfiguredFallbackChain({
+    configuredFallbackModels: userCategories?.[args.category!]?.fallback_models,
+    defaultFallbackChain: requirement?.fallbackChain,
+  })
 
   if (!categoryModel && !actualModel) {
     const categoryNames = Object.keys(enabledCategories)
@@ -180,6 +185,6 @@ Available categories: ${categoryNames.join(", ")}`,
     modelInfo,
     actualModel,
     isUnstableAgent,
-    fallbackChain: requirement?.fallbackChain,
+    fallbackChain,
   }
 }

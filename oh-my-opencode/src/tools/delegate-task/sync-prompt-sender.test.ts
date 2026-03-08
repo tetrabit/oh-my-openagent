@@ -244,4 +244,60 @@ bunDescribe("sendSyncPrompt", () => {
     bunExpect(promptWithModelSuggestionRetry).toHaveBeenCalledTimes(1)
     bunExpect(promptSyncWithModelSuggestionRetry).toHaveBeenCalledTimes(0)
   })
+
+  bunTest("retries prompt startup with the configured fallback chain after a retryable abort", async () => {
+    //#given
+    const { sendSyncPrompt } = require("./sync-prompt-sender")
+
+    const promptCalls: any[] = []
+    const promptWithModelSuggestionRetry = bunMock(async (input: any) => {
+      promptCalls.push(input)
+      if (promptCalls.length === 1) {
+        const error = new Error("quota exceeded while opening session")
+        error.name = "MessageAbortedError"
+        throw error
+      }
+    })
+
+    const input = {
+      sessionID: "test-session",
+      agentToUse: "oracle",
+      args: {
+        description: "test task",
+        prompt: "test prompt",
+        run_in_background: false,
+        load_skills: [],
+      },
+      systemContent: undefined,
+      categoryModel: {
+        providerID: "openai",
+        modelID: "gpt-5.2",
+      },
+      fallbackChain: [
+        { providers: ["openai"], model: "gpt-5.2" },
+        { providers: ["google"], model: "gemini-3-flash-preview" },
+        { providers: ["opencode"], model: "big-pickle" },
+      ],
+      toastManager: null,
+      taskId: undefined,
+    }
+
+    //#when
+    const result = await sendSyncPrompt(
+      { session: { promptAsync: bunMock(async () => ({ data: {} })) } },
+      input,
+      {
+        promptWithModelSuggestionRetry,
+        promptSyncWithModelSuggestionRetry: bunMock(async () => {}),
+      },
+    )
+
+    //#then
+    bunExpect(result).toBeNull()
+    bunExpect(promptWithModelSuggestionRetry).toHaveBeenCalledTimes(2)
+    bunExpect(promptCalls[1].body.model).toEqual({
+      providerID: "google",
+      modelID: "gemini-3-flash-preview",
+    })
+  })
 })

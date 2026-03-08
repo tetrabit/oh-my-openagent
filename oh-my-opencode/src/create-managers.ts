@@ -59,6 +59,8 @@ export function createManagers(args: {
         })
       },
       enableParentSessionNotifications: backgroundNotificationHookEnabled,
+      agentOverrides: pluginConfig.agents,
+      userCategories: pluginConfig.categories,
     },
   )
 

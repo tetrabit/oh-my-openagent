@@ -75,4 +75,44 @@ describe("resolveCategoryExecution", () => {
 		expect(result.error).toContain("Unknown category")
 		expect(result.error).toContain("definitely-not-a-real-category-xyz123")
 	})
+
+	test("prefers configured category fallback_models over the bundled fallback chain", async () => {
+		//#given
+		const args = {
+			category: "quick",
+			prompt: "test prompt",
+			description: "Test task",
+			run_in_background: false,
+			load_skills: [],
+			blockedBy: undefined,
+			enableSkillTools: false,
+		}
+		const executorCtx = {
+			...createMockExecutorContext(),
+			userCategories: {
+				quick: {
+					model: "anthropic/claude-haiku-4-5",
+					fallback_models: [
+						"google/gemini-3-flash-preview",
+						"opencode/big-pickle",
+					],
+				},
+			},
+		}
+
+		//#when
+		const result = await resolveCategoryExecution(
+			args,
+			executorCtx,
+			undefined,
+			"anthropic/claude-sonnet-4-6",
+		)
+
+		//#then
+		expect(result.error).toBeUndefined()
+		expect(result.fallbackChain).toEqual([
+			{ providers: ["google"], model: "gemini-3-flash-preview" },
+			{ providers: ["opencode"], model: "big-pickle" },
+		])
+	})
 })

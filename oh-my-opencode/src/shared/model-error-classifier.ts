@@ -69,6 +69,10 @@ export function isRetryableModelError(error: ErrorInfo): boolean {
   if (error.name) {
     // Explicit non-retryable takes precedence
     if (NON_RETRYABLE_ERROR_NAMES.has(error.name)) {
+      if (error.name === "MessageAbortedError") {
+        const msg = error.message?.toLowerCase() ?? ""
+        return RETRYABLE_MESSAGE_PATTERNS.some((pattern) => msg.includes(pattern))
+      }
       return false
     }
     // Check if it's a known retryable error

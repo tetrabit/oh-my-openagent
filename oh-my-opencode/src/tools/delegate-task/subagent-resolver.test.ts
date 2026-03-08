@@ -79,4 +79,73 @@ describe("resolveSubagentExecution", () => {
       error: "network timeout",
     })
   })
+
+  test("prefers agent override fallback_models over bundled fallback requirements", async () => {
+    //#given
+    const args = createBaseArgs({ subagent_type: "oracle" })
+    const executorCtx = {
+      ...createExecutorContext(async () => [
+        {
+          name: "oracle",
+          mode: "subagent",
+          model: { providerID: "openai", modelID: "gpt-5.2" },
+        },
+      ]),
+      agentOverrides: {
+        oracle: {
+          fallback_models: [
+            "google/gemini-3-pro-preview",
+            "opencode/big-pickle",
+          ],
+        },
+      },
+    }
+
+    //#when
+    const result = await resolveSubagentExecution(args, executorCtx, "sisyphus", "deep")
+
+    //#then
+    expect(result.error).toBeUndefined()
+    expect(result.fallbackChain).toEqual([
+      { providers: ["google"], model: "gemini-3-pro-preview" },
+      { providers: ["opencode"], model: "big-pickle" },
+    ])
+  })
+
+  test("inherits fallback_models from the override category when agent fallback_models are unset", async () => {
+    //#given
+    const args = createBaseArgs({ subagent_type: "oracle" })
+    const executorCtx = {
+      ...createExecutorContext(async () => [
+        {
+          name: "oracle",
+          mode: "subagent",
+          model: { providerID: "openai", modelID: "gpt-5.2" },
+        },
+      ]),
+      agentOverrides: {
+        oracle: {
+          category: "writing",
+        },
+      },
+      userCategories: {
+        writing: {
+          fallback_models: [
+            "google/gemini-3-flash-preview",
+            "opencode/big-pickle",
+          ],
+        },
+      },
+    }
+
+    //#when
+    const result = await resolveSubagentExecution(args, executorCtx, "sisyphus", "deep")
+
+    //#then
+    expect(result.error).toBeUndefined()
+    expect(result.fallbackChain).toEqual([
+      { providers: ["google"], model: "gemini-3-flash-preview" },
+      { providers: ["opencode"], model: "big-pickle" },
+    ])
+  })
 })

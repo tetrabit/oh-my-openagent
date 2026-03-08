@@ -189,6 +189,12 @@ export async function applyAgentConfig(params: {
         )
       : undefined;
 
+    const preservedBuild = {
+      ...migratedBuild,
+      mode: (migratedBuild.mode as string | undefined) ?? "primary",
+      hidden: migratedBuild.hidden === true ? true : undefined,
+    }
+
     params.config.agent = {
       ...agentConfig,
       ...Object.fromEntries(
@@ -198,7 +204,7 @@ export async function applyAgentConfig(params: {
       ...projectAgents,
       ...pluginAgents,
       ...filteredConfigAgents,
-      build: { ...migratedBuild, mode: "subagent", hidden: true },
+      build: preservedBuild,
       ...(planDemoteConfig ? { plan: planDemoteConfig } : {}),
     };
   } else {

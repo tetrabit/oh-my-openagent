@@ -4,10 +4,13 @@ import {
   promptSyncWithModelSuggestionRetry,
   promptWithModelSuggestionRetry,
 } from "../../shared/model-suggestion-retry"
+import { sendPromptWithFallbackRetry } from "../../shared/prompt-fallback-retry"
 import { formatDetailedError } from "./error-formatting"
 import { getAgentToolRestrictions } from "../../shared/agent-tool-restrictions"
 import { setSessionTools } from "../../shared/session-tools-store"
 import { createInternalAgentTextPart } from "../../shared/internal-initiator-marker"
+import { setSessionModel } from "../../shared/session-model-state"
+import type { FallbackEntry } from "../../shared/model-requirements"
 
 type SendSyncPromptDeps = {
   promptWithModelSuggestionRetry: typeof promptWithModelSuggestionRetry
@@ -37,6 +40,7 @@ export async function sendSyncPrompt(
     args: DelegateTaskArgs
     systemContent: string | undefined
     categoryModel: { providerID: string; modelID: string; variant?: string } | undefined
+    fallbackChain?: FallbackEntry[]
     toastManager: { removeTask: (id: string) => void } | null | undefined
     taskId: string | undefined
   },
@@ -66,7 +70,18 @@ export async function sendSyncPrompt(
   }
 
   try {
-    await deps.promptWithModelSuggestionRetry(client, promptArgs)
+    const promptResult = await sendPromptWithFallbackRetry({
+      promptArgs,
+      currentModel: input.categoryModel,
+      fallbackChain: input.fallbackChain,
+      sendPrompt: (nextPromptArgs) => deps.promptWithModelSuggestionRetry(client, nextPromptArgs),
+    })
+    if (promptResult.usedFallback && promptResult.providerID && promptResult.modelID) {
+      setSessionModel(input.sessionID, {
+        providerID: promptResult.providerID,
+        modelID: promptResult.modelID,
+      })
+    }
   } catch (promptError) {
     if (isOracleAgent(input.agentToUse) && isUnexpectedEofError(promptError)) {
       try {

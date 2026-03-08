@@ -104,6 +104,7 @@ export async function executeSyncTask(
       args,
       systemContent,
       categoryModel,
+      fallbackChain,
       toastManager,
       taskId,
     })

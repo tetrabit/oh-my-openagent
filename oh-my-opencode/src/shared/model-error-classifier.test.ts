@@ -36,6 +36,20 @@ describe("model-error-classifier", () => {
     expect(result).toBe(true)
   })
 
+  test("treats MessageAbortedError with quota text as retryable", () => {
+    //#given
+    const error = {
+      name: "MessageAbortedError",
+      message: "quota exceeded while starting request",
+    }
+
+    //#when
+    const result = shouldRetryError(error)
+
+    //#then
+    expect(result).toBe(true)
+  })
+
   test("selectFallbackProvider prefers first connected provider in preference order", () => {
     //#given
     writeFileSync(

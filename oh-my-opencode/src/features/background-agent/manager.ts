@@ -12,13 +12,16 @@ import {
   normalizePromptTools,
   normalizeSDKResponse,
   promptWithModelSuggestionRetry,
+  resolveConfiguredFallbackChain,
   resolveInheritedPromptTools,
+  sendPromptWithFallbackRetry,
   createInternalAgentTextPart,
 } from "../../shared"
 import { setSessionTools } from "../../shared/session-tools-store"
+import { setSessionModel } from "../../shared/session-model-state"
 import { SessionCategoryRegistry } from "../../shared/session-category-registry"
 import { ConcurrencyManager } from "./concurrency"
-import type { BackgroundTaskConfig, TmuxConfig } from "../../config/schema"
+import type { AgentOverrides, BackgroundTaskConfig, CategoriesConfig, TmuxConfig } from "../../config/schema"
 import { isInsideTmux } from "../../shared/tmux"
 import {
   shouldRetryError,
@@ -29,7 +32,7 @@ import {
   TASK_CLEANUP_DELAY_MS,
 } from "./constants"
 
-import { subagentSessions } from "../claude-code-session-state"
+import { setSessionAgent, subagentSessions } from "../claude-code-session-state"
 import { getTaskToastManager } from "../task-toast-manager"
 import { formatDuration } from "./duration-formatter"
 import {
@@ -47,6 +50,8 @@ import { MESSAGE_STORAGE } from "../hook-message-injector"
 import { join } from "node:path"
 import { pruneStaleTasksAndNotifications } from "./task-poller"
 import { checkAndInterruptStaleTasks } from "./task-poller"
+import { getAgentConfigKey } from "../../shared/agent-display-names"
+import { setSessionFallbackChain } from "../../hooks/model-fallback/hook"
 
 type OpencodeClient = PluginInput["client"]
 
@@ -111,6 +116,8 @@ export class BackgroundManager {
   private idleDeferralTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
   private notificationQueueByParent: Map<string, Promise<void>> = new Map()
   private enableParentSessionNotifications: boolean
+  private agentOverrides?: AgentOverrides
+  private userCategories?: CategoriesConfig
   readonly taskHistory = new TaskHistory()
 
   constructor(
@@ -121,6 +128,8 @@ export class BackgroundManager {
       onSubagentSessionCreated?: OnSubagentSessionCreated
       onShutdown?: () => void
       enableParentSessionNotifications?: boolean
+      agentOverrides?: AgentOverrides
+      userCategories?: CategoriesConfig
     }
   ) {
     this.tasks = new Map()
@@ -134,7 +143,36 @@ export class BackgroundManager {
     this.onSubagentSessionCreated = options?.onSubagentSessionCreated
     this.onShutdown = options?.onShutdown
     this.enableParentSessionNotifications = options?.enableParentSessionNotifications ?? true
+    this.agentOverrides = options?.agentOverrides
+    this.userCategories = options?.userCategories
     this.registerProcessCleanup()
+  }
+
+  private resolveLaunchFallbackChain(
+    agentName: string,
+    categoryName?: string,
+  ): import("../../shared/model-requirements").FallbackEntry[] | undefined {
+    if (categoryName) {
+      const categoryFallbackChain = resolveConfiguredFallbackChain({
+        configuredFallbackModels: this.userCategories?.[categoryName]?.fallback_models,
+      })
+      if (categoryFallbackChain && categoryFallbackChain.length > 0) {
+        return categoryFallbackChain
+      }
+    }
+
+    const agentConfigKey = getAgentConfigKey(agentName)
+    const agentOverride = this.agentOverrides?.[agentConfigKey as keyof typeof this.agentOverrides]
+      ?? (this.agentOverrides
+        ? Object.entries(this.agentOverrides).find(([key]) => key.toLowerCase() === agentConfigKey)?.[1]
+        : undefined)
+
+    return resolveConfiguredFallbackChain({
+      configuredFallbackModels: agentOverride?.fallback_models,
+      categoryConfiguredFallbackModels: agentOverride?.category
+        ? this.userCategories?.[agentOverride.category]?.fallback_models
+        : undefined,
+    })
   }
 
   async launch(input: LaunchInput): Promise<BackgroundTask> {
@@ -148,6 +186,8 @@ export class BackgroundManager {
     if (!input.agent || input.agent.trim() === "") {
       throw new Error("Agent parameter is required")
     }
+
+    const fallbackChain = input.fallbackChain ?? this.resolveLaunchFallbackChain(input.agent, input.category)
 
     // Create task immediately with status="pending"
     const task: BackgroundTask = {
@@ -165,7 +205,7 @@ export class BackgroundManager {
       parentAgent: input.parentAgent,
       parentTools: input.parentTools,
       model: input.model,
-      fallbackChain: input.fallbackChain,
+      fallbackChain,
       attemptCount: 0,
       category: input.category,
     }
@@ -284,6 +324,8 @@ export class BackgroundManager {
 
     const sessionID = createResult.data.id
     subagentSessions.add(sessionID)
+    setSessionAgent(sessionID, input.agent)
+    setSessionFallbackChain(sessionID, task.fallbackChain)
 
     log("[background-agent] tmux callback check", {
       hasCallback: !!this.onSubagentSessionCreated,
@@ -346,7 +388,7 @@ export class BackgroundManager {
       : undefined
     const launchVariant = input.model?.variant
 
-    promptWithModelSuggestionRetry(this.client, {
+    const promptArgs = {
       path: { id: sessionID },
       body: {
         agent: input.agent,
@@ -365,6 +407,27 @@ export class BackgroundManager {
         })(),
         parts: [createInternalAgentTextPart(input.prompt)],
       },
+    }
+
+    sendPromptWithFallbackRetry({
+      promptArgs,
+      currentModel: input.model,
+      fallbackChain: task.fallbackChain,
+      sendPrompt: (nextPromptArgs) => promptWithModelSuggestionRetry(this.client, nextPromptArgs),
+    }).then((result) => {
+      if (!result.usedFallback || !result.providerID || !result.modelID) {
+        return
+      }
+
+      task.model = {
+        providerID: result.providerID,
+        modelID: result.modelID,
+        variant: result.variant,
+      }
+      setSessionModel(sessionID, {
+        providerID: result.providerID,
+        modelID: result.modelID,
+      })
     }).catch((error) => {
       log("[background-agent] promptAsync error:", error)
       const existingTask = this.findBySession(sessionID)
@@ -620,7 +683,7 @@ export class BackgroundManager {
       : undefined
     const resumeVariant = existingTask.model?.variant
 
-    this.client.session.promptAsync({
+    const promptArgs = {
       path: { id: existingTask.sessionID },
       body: {
         agent: existingTask.agent,
@@ -638,6 +701,29 @@ export class BackgroundManager {
         })(),
         parts: [createInternalAgentTextPart(input.prompt)],
       },
+    }
+    setSessionAgent(existingTask.sessionID, existingTask.agent)
+    setSessionFallbackChain(existingTask.sessionID, existingTask.fallbackChain)
+
+    sendPromptWithFallbackRetry({
+      promptArgs,
+      currentModel: existingTask.model,
+      fallbackChain: existingTask.fallbackChain,
+      sendPrompt: (nextPromptArgs) => promptWithModelSuggestionRetry(this.client, nextPromptArgs),
+    }).then((result) => {
+      if (!result.usedFallback || !result.providerID || !result.modelID || !existingTask.sessionID) {
+        return
+      }
+
+      existingTask.model = {
+        providerID: result.providerID,
+        modelID: result.modelID,
+        variant: result.variant,
+      }
+      setSessionModel(existingTask.sessionID, {
+        providerID: result.providerID,
+        modelID: result.modelID,
+      })
     }).catch((error) => {
       log("[background-agent] resume prompt error:", error)
       existingTask.status = "interrupt"
