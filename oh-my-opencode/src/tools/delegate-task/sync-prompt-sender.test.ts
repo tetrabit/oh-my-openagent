@@ -250,7 +250,7 @@ bunDescribe("sendSyncPrompt", () => {
     const { sendSyncPrompt } = require("./sync-prompt-sender")
 
     const promptCalls: any[] = []
-    const promptWithModelSuggestionRetry = bunMock(async (input: any) => {
+    const promptWithModelSuggestionRetry = bunMock(async (_client: any, input: any) => {
       promptCalls.push(input)
       if (promptCalls.length === 1) {
         const error = new Error("quota exceeded while opening session")
