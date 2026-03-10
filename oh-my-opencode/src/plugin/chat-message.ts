@@ -35,6 +35,29 @@ function isStartWorkHookOutput(value: unknown): value is StartWorkHookOutput {
   })
 }
 
+function syncSessionModelFromMessage(
+  sessionID: string,
+  messageModel: unknown,
+): boolean {
+  if (
+    !messageModel
+    || typeof messageModel !== "object"
+    || !("providerID" in messageModel)
+    || !("modelID" in messageModel)
+  ) {
+    return false
+  }
+
+  const providerID = (messageModel as { providerID?: string }).providerID
+  const modelID = (messageModel as { modelID?: string }).modelID
+  if (typeof providerID !== "string" || typeof modelID !== "string") {
+    return false
+  }
+
+  setSessionModel(sessionID, { providerID, modelID })
+  return true
+}
+
 export function createChatMessageHandler(args: {
   ctx: PluginContext
   pluginConfig: OhMyOpenCodeConfig
@@ -91,23 +114,12 @@ export function createChatMessageHandler(args: {
     if (!isRuntimeFallbackEnabled) {
       await hooks.modelFallback?.["chat.message"]?.(input, output)
     }
-    const modelOverride = output.message["model"]
-    if (
-      modelOverride &&
-      typeof modelOverride === "object" &&
-      "providerID" in modelOverride &&
-      "modelID" in modelOverride
-    ) {
-      const providerID = (modelOverride as { providerID?: string }).providerID
-      const modelID = (modelOverride as { modelID?: string }).modelID
-      if (typeof providerID === "string" && typeof modelID === "string") {
-        setSessionModel(input.sessionID, { providerID, modelID })
-      }
-    } else if (input.model) {
+    if (!syncSessionModelFromMessage(input.sessionID, output.message["model"]) && input.model) {
       setSessionModel(input.sessionID, input.model)
     }
     await hooks.stopContinuationGuard?.["chat.message"]?.(input)
     await hooks.runtimeFallback?.["chat.message"]?.(input, output)
+    syncSessionModelFromMessage(input.sessionID, output.message["model"])
     await hooks.keywordDetector?.["chat.message"]?.(input, output)
     await hooks.claudeCodeHooks?.["chat.message"]?.(input, output)
     await hooks.autoSlashCommand?.["chat.message"]?.(input, output)

@@ -13,6 +13,9 @@ const RETRYABLE_ERROR_NAMES = new Set([
   "ModelUnavailableError",
   "ProviderConnectionError",
   "AuthenticationError",
+  // OpenCode background subagents can surface exhausted-provider states as session.status=retry
+  // without a stable retry message, so the explicit retry status itself must advance fallback.
+  "SessionRetry",
 ])
 
 /**

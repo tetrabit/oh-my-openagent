@@ -50,6 +50,17 @@ describe("model-error-classifier", () => {
     expect(result).toBe(true)
   })
 
+  test("treats SessionRetry as retryable even without a message", () => {
+    //#given
+    const error = { name: "SessionRetry" }
+
+    //#when
+    const result = shouldRetryError(error)
+
+    //#then
+    expect(result).toBe(true)
+  })
+
   test("selectFallbackProvider prefers first connected provider in preference order", () => {
     //#given
     writeFileSync(

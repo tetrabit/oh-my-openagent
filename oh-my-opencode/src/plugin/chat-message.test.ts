@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test"
 
 import { createChatMessageHandler } from "./chat-message"
+import { clearSessionModel, getSessionModel } from "../shared/session-model-state"
 
 type ChatMessagePart = { type: string; text?: string; [key: string]: unknown }
 type ChatMessageHandlerOutput = { message: Record<string, unknown>; parts: ChatMessagePart[] }
@@ -114,5 +115,39 @@ describe("createChatMessageHandler - TUI variant passthrough", () => {
 
     //#then - gate should still be marked as applied
     expect(args._appliedSessions).toContain("test-session")
+  })
+
+  test("runtime fallback: persists fallback model in session state", async () => {
+    //#given - runtime fallback rewrites the outgoing model
+    clearSessionModel("test-session")
+    const args = createMockHandlerArgs({
+      pluginConfig: {
+        runtime_fallback: {
+          enabled: true,
+        },
+      },
+    })
+    args.hooks.runtimeFallback = {
+      "chat.message": async (_input: unknown, output: ChatMessageHandlerOutput) => {
+        output.message["model"] = {
+          providerID: "google",
+          modelID: "gemini-3.1-pro-preview",
+        }
+      },
+    }
+    const handler = createChatMessageHandler(args)
+    const input = createMockInput("prometheus", { providerID: "anthropic", modelID: "claude-opus-4-6" })
+    const output = createMockOutput()
+
+    //#when
+    await handler(input, output)
+
+    //#then - the session should stick to the fallback model
+    expect(getSessionModel("test-session")).toEqual({
+      providerID: "google",
+      modelID: "gemini-3.1-pro-preview",
+    })
+
+    clearSessionModel("test-session")
   })
 })
