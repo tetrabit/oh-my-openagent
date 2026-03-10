@@ -7,6 +7,16 @@ import { MIN_IDLE_TIME_MS } from "./constants"
 import { BackgroundManager } from "./manager"
 import { ConcurrencyManager } from "./concurrency"
 import { initTaskToastManager, _resetTaskToastManagerForTesting } from "../task-toast-manager/manager"
+import {
+  _resetForTesting as resetClaudeCodeSessionState,
+  getSessionAgent,
+  setSessionAgent,
+  subagentSessions,
+} from "../claude-code-session-state"
+import { getSessionModel, setSessionModel } from "../../shared/session-model-state"
+import { getSessionTools, setSessionTools, clearSessionTools } from "../../shared/session-tools-store"
+import { setSessionFallbackChain } from "../../hooks/model-fallback/hook"
+import { SessionCategoryRegistry } from "../../shared/session-category-registry"
 
 
 const TASK_TTL_MS = 30 * 60 * 1000
@@ -171,8 +181,12 @@ function createMockTask(overrides: Partial<BackgroundTask> & { id: string; sessi
 function createBackgroundManager(): BackgroundManager {
   const client = {
     session: {
+      get: async () => ({ data: { directory: tmpdir() } }),
       prompt: async () => ({}),
       promptAsync: async () => ({}),
+      messages: async () => ({ data: [] }),
+      todo: async () => ({ data: [] }),
+      status: async () => ({ data: {} }),
       abort: async () => ({}),
     },
   }
@@ -203,8 +217,18 @@ function getQueuesByKey(
   }).queuesByKey
 }
 
+function getRetiredSessionMap(manager: BackgroundManager): Map<string, import("./types").RetiredSessionRecord> {
+  return (manager as unknown as {
+    retiredSessionsBySessionID: Map<string, import("./types").RetiredSessionRecord>
+  }).retiredSessionsBySessionID
+}
+
 async function processKeyForTest(manager: BackgroundManager, key: string): Promise<void> {
   return (manager as unknown as { processKey: (key: string) => Promise<void> }).processKey(key)
+}
+
+async function pollRunningTasksForTest(manager: BackgroundManager): Promise<void> {
+  return (manager as unknown as { pollRunningTasks: () => Promise<void> }).pollRunningTasks()
 }
 
 function pruneStaleTasksAndNotificationsForTest(manager: BackgroundManager): void {
@@ -2961,6 +2985,12 @@ describe("BackgroundManager.handleEvent - session.error", () => {
     { providers: ["anthropic"], model: "gpt-5.3-codex", variant: "high" },
   ]
 
+  afterEach(() => {
+    resetClaudeCodeSessionState()
+    clearSessionTools()
+    SessionCategoryRegistry.clear()
+  })
+
   const stubProcessKey = (manager: BackgroundManager) => {
     ;(manager as unknown as { processKey: (key: string) => Promise<void> }).processKey = async () => {}
   }
@@ -3241,6 +3271,309 @@ describe("BackgroundManager.handleEvent - session.error", () => {
       modelID: "claude-opus-4-6",
       variant: "max",
     })
+
+    manager.shutdown()
+  })
+
+  test("retry path retires the superseded session and keeps it under cleanup supervision", async () => {
+    //#given
+    const abortCalls: string[] = []
+    const client = {
+      session: {
+        get: async () => ({ data: { directory: tmpdir() } }),
+        prompt: async () => ({}),
+        promptAsync: async () => ({}),
+        messages: async () => ({ data: [] }),
+        todo: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+        abort: async ({ path }: { path: { id: string } }) => {
+          abortCalls.push(path.id)
+          return {}
+        },
+      },
+    }
+    const manager = new BackgroundManager({ client, directory: tmpdir() } as unknown as PluginInput)
+    stubProcessKey(manager)
+
+    const sessionID = "ses_status_retired"
+    setSessionAgent(sessionID, "explore")
+    setSessionModel(sessionID, { providerID: "anthropic", modelID: "claude-opus-4-6-thinking" })
+    setSessionTools(sessionID, { task: false, call_omo_agent: true })
+    setSessionFallbackChain(sessionID, defaultRetryFallbackChain)
+    SessionCategoryRegistry.register(sessionID, "quick")
+    subagentSessions.add(sessionID)
+
+    const task = createRetryTask(manager, {
+      id: "task-status-retired",
+      sessionID,
+      description: "task that should retire old session",
+      concurrencyKey: "anthropic/claude-opus-4-6-thinking",
+    })
+
+    //#when
+    manager.handleEvent({
+      type: "session.status",
+      properties: {
+        sessionID,
+        status: {
+          type: "retry",
+          message: "Provider is overloaded",
+        },
+      },
+    })
+
+    //#then
+    const retired = getRetiredSessionMap(manager).get(sessionID)
+    expect(task.status).toBe("pending")
+    expect(task.sessionID).toBeUndefined()
+    expect(retired?.taskID).toBe(task.id)
+    expect(retired?.replacementAttemptCount).toBe(1)
+    expect(subagentSessions.has(sessionID)).toBe(true)
+    expect(getSessionAgent(sessionID)).toBeUndefined()
+    expect(getSessionModel(sessionID)).toBeUndefined()
+    expect(getSessionTools(sessionID)).toBeUndefined()
+    expect(SessionCategoryRegistry.has(sessionID)).toBe(false)
+    expect(abortCalls).toContain(sessionID)
+
+    manager.shutdown()
+  })
+
+  test("retired session activity is suppressed and re-aborted", () => {
+    //#given
+    const abortCalls: string[] = []
+    const client = {
+      session: {
+        get: async () => ({ data: { directory: tmpdir() } }),
+        prompt: async () => ({}),
+        promptAsync: async () => ({}),
+        messages: async () => ({ data: [] }),
+        todo: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+        abort: async ({ path }: { path: { id: string } }) => {
+          abortCalls.push(path.id)
+          return {}
+        },
+      },
+    }
+    const manager = new BackgroundManager({ client, directory: tmpdir() } as unknown as PluginInput)
+    const sessionID = "ses_retired_activity"
+
+    getRetiredSessionMap(manager).set(sessionID, {
+      sessionID,
+      taskID: "task-retired-activity",
+      parentSessionID: "parent-session",
+      agent: "explore",
+      source: "session.status",
+      retiredAt: new Date(Date.now() - 10_000),
+      abortRequestedAt: new Date(Date.now() - 10_000),
+      abortAttempts: 1,
+      replacementAttemptCount: 1,
+      replacementModel: { providerID: "openai", modelID: "gpt-5.4" },
+    })
+    subagentSessions.add(sessionID)
+
+    //#when
+    manager.handleEvent({
+      type: "message.part.delta",
+      properties: {
+        sessionID,
+        type: "text",
+      },
+    })
+
+    //#then
+    const retired = getRetiredSessionMap(manager).get(sessionID)
+    expect(retired?.abortAttempts).toBe(2)
+    expect(retired?.lastObservedStatus).toBe("message.part.delta")
+    expect(abortCalls).toEqual([sessionID])
+
+    manager.shutdown()
+  })
+
+  test("terminal retired session events clean up tracking and session state", () => {
+    //#given
+    const manager = createBackgroundManager()
+    const sessionID = "ses_retired_cleanup"
+
+    getRetiredSessionMap(manager).set(sessionID, {
+      sessionID,
+      taskID: "task-retired-cleanup",
+      parentSessionID: "parent-session",
+      agent: "explore",
+      source: "session.error",
+      retiredAt: new Date(Date.now() - 10_000),
+      abortRequestedAt: new Date(Date.now() - 10_000),
+      abortAttempts: 1,
+      replacementAttemptCount: 1,
+      replacementModel: { providerID: "openai", modelID: "gpt-5.4" },
+    })
+    setSessionAgent(sessionID, "explore")
+    setSessionModel(sessionID, { providerID: "anthropic", modelID: "claude-opus-4-6-thinking" })
+    setSessionTools(sessionID, { task: false, call_omo_agent: true })
+    SessionCategoryRegistry.register(sessionID, "quick")
+    subagentSessions.add(sessionID)
+
+    //#when
+    manager.handleEvent({
+      type: "session.idle",
+      properties: {
+        sessionID,
+      },
+    })
+
+    //#then
+    expect(getRetiredSessionMap(manager).has(sessionID)).toBe(false)
+    expect(subagentSessions.has(sessionID)).toBe(false)
+    expect(getSessionAgent(sessionID)).toBeUndefined()
+    expect(getSessionModel(sessionID)).toBeUndefined()
+    expect(getSessionTools(sessionID)).toBeUndefined()
+    expect(SessionCategoryRegistry.has(sessionID)).toBe(false)
+
+    manager.shutdown()
+  })
+
+  test("polling keeps reaping retired sessions after the active task has moved on", async () => {
+    //#given
+    const abortCalls: string[] = []
+    const sessionID = "ses_retired_poll"
+    const client = {
+      session: {
+        get: async () => ({ data: { directory: tmpdir() } }),
+        prompt: async () => ({}),
+        promptAsync: async () => ({}),
+        messages: async () => ({ data: [] }),
+        todo: async () => ({ data: [] }),
+        status: async () => ({ data: { [sessionID]: { type: "retry" } } }),
+        abort: async ({ path }: { path: { id: string } }) => {
+          abortCalls.push(path.id)
+          return {}
+        },
+      },
+    }
+    const manager = new BackgroundManager({ client, directory: tmpdir() } as unknown as PluginInput)
+
+    getRetiredSessionMap(manager).set(sessionID, {
+      sessionID,
+      taskID: "task-retired-poll",
+      parentSessionID: "parent-session",
+      agent: "explore",
+      source: "session.status",
+      retiredAt: new Date(Date.now() - 10_000),
+      abortRequestedAt: new Date(Date.now() - 10_000),
+      abortAttempts: 1,
+      replacementAttemptCount: 1,
+      replacementModel: { providerID: "openai", modelID: "gpt-5.4" },
+    })
+    subagentSessions.add(sessionID)
+
+    //#when
+    await pollRunningTasksForTest(manager)
+
+    //#then
+    expect(abortCalls).toEqual([sessionID])
+    expect(getRetiredSessionMap(manager).has(sessionID)).toBe(true)
+
+    manager.shutdown()
+  })
+
+  test("retry path abandons descendant task branches rooted under the superseded session", async () => {
+    //#given
+    const abortCalls: string[] = []
+    const client = {
+      session: {
+        get: async () => ({ data: { directory: tmpdir() } }),
+        prompt: async () => ({}),
+        promptAsync: async () => ({}),
+        messages: async () => ({ data: [] }),
+        todo: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+        abort: async ({ path }: { path: { id: string } }) => {
+          abortCalls.push(path.id)
+          return {}
+        },
+      },
+    }
+    const manager = new BackgroundManager({ client, directory: tmpdir() } as unknown as PluginInput)
+    stubProcessKey(manager)
+
+    const rootSessionID = "ses_root_retry"
+    const childSessionID = "ses_child_running"
+
+    const rootTask = createRetryTask(manager, {
+      id: "task-root-retry",
+      sessionID: rootSessionID,
+      description: "root task that should retry",
+    })
+    const childTask = createMockTask({
+      id: "task-child-running",
+      sessionID: childSessionID,
+      parentSessionID: rootSessionID,
+      parentMessageID: "msg-child",
+      description: "child task under superseded session",
+      agent: "explore",
+      status: "running",
+      startedAt: new Date(),
+      model: { providerID: "openai", modelID: "gpt-5.4" },
+      attemptCount: 0,
+    })
+    const grandchildTask: BackgroundTask = {
+      id: "task-grandchild-pending",
+      parentSessionID: childSessionID,
+      parentMessageID: "msg-grandchild",
+      description: "pending grandchild task",
+      prompt: "continue exploring",
+      agent: "explore",
+      status: "pending",
+      queuedAt: new Date(),
+    }
+
+    const taskMap = getTaskMap(manager)
+    taskMap.set(childTask.id, childTask)
+    taskMap.set(grandchildTask.id, grandchildTask)
+
+    const grandchildInput: import("./types").LaunchInput = {
+      description: grandchildTask.description,
+      prompt: grandchildTask.prompt,
+      agent: grandchildTask.agent,
+      parentSessionID: grandchildTask.parentSessionID,
+      parentMessageID: grandchildTask.parentMessageID,
+    }
+    getQueuesByKey(manager).set(grandchildTask.agent, [{ task: grandchildTask, input: grandchildInput }])
+
+    setSessionAgent(childSessionID, "explore")
+    setSessionModel(childSessionID, { providerID: "openai", modelID: "gpt-5.4" })
+    setSessionTools(childSessionID, { task: false, call_omo_agent: true })
+    SessionCategoryRegistry.register(childSessionID, "quick")
+    subagentSessions.add(childSessionID)
+
+    //#when
+    manager.handleEvent({
+      type: "session.status",
+      properties: {
+        sessionID: rootSessionID,
+        status: {
+          type: "retry",
+          message: "Provider is overloaded",
+        },
+      },
+    })
+
+    //#then
+    expect(rootTask.status).toBe("pending")
+    expect(getTaskMap(manager).has(childTask.id)).toBe(false)
+    expect(getTaskMap(manager).has(grandchildTask.id)).toBe(false)
+    expect(getQueuesByKey(manager).get(grandchildTask.agent)).toBeUndefined()
+
+    const retiredSessions = getRetiredSessionMap(manager)
+    expect(retiredSessions.has(rootSessionID)).toBe(true)
+    expect(retiredSessions.has(childSessionID)).toBe(true)
+    expect(subagentSessions.has(childSessionID)).toBe(true)
+    expect(getSessionAgent(childSessionID)).toBeUndefined()
+    expect(getSessionModel(childSessionID)).toBeUndefined()
+    expect(getSessionTools(childSessionID)).toBeUndefined()
+    expect(SessionCategoryRegistry.has(childSessionID)).toBe(false)
+    expect(abortCalls).toContain(rootSessionID)
+    expect(abortCalls).toContain(childSessionID)
 
     manager.shutdown()
   })

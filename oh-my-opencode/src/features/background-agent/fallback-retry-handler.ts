@@ -20,8 +20,25 @@ export function tryFallbackRetry(args: {
   idleDeferralTimers: Map<string, ReturnType<typeof setTimeout>>
   queuesByKey: Map<string, QueueItem[]>
   processKey: (key: string) => void
+  onRetireSession?: (input: {
+    sessionID: string
+    task: BackgroundTask
+    source: string
+    replacementModel: { providerID: string; modelID: string; variant?: string }
+    attemptCount: number
+  }) => void
 }): boolean {
-  const { task, errorInfo, source, concurrencyManager, client, idleDeferralTimers, queuesByKey, processKey } = args
+  const {
+    task,
+    errorInfo,
+    source,
+    concurrencyManager,
+    client,
+    idleDeferralTimers,
+    queuesByKey,
+    processKey,
+    onRetireSession,
+  } = args
   const fallbackChain = task.fallbackChain
   const canRetry =
     shouldRetryError(errorInfo) &&
@@ -65,6 +82,7 @@ export function tryFallbackRetry(args: {
     nextFallback.providers,
     task.model?.providerID,
   )
+  const transformedModelId = transformModelForProvider(providerID, nextFallback.model)
 
   log("[background-agent] Retryable error, attempting fallback:", {
     taskId: task.id,
@@ -81,6 +99,17 @@ export function tryFallbackRetry(args: {
   }
 
   if (task.sessionID) {
+    onRetireSession?.({
+      sessionID: task.sessionID,
+      task,
+      source,
+      replacementModel: {
+        providerID,
+        modelID: transformedModelId,
+        variant: nextFallback.variant,
+      },
+      attemptCount: selectedAttemptCount,
+    })
     client.session.abort({ path: { id: task.sessionID } }).catch(() => {})
   }
 
@@ -91,7 +120,6 @@ export function tryFallbackRetry(args: {
   }
 
   task.attemptCount = selectedAttemptCount
-  const transformedModelId = transformModelForProvider(providerID, nextFallback.model)
   task.model = {
     providerID,
     modelID: transformedModelId,

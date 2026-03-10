@@ -56,6 +56,21 @@ export interface BackgroundTask {
   stablePolls?: number
 }
 
+export interface RetiredSessionRecord {
+  sessionID: string
+  taskID: string
+  parentSessionID: string
+  agent: string
+  source: string
+  retiredAt: Date
+  abortRequestedAt?: Date
+  abortAttempts: number
+  lastObservedAt?: Date
+  lastObservedStatus?: string
+  replacementModel?: { providerID: string; modelID: string; variant?: string }
+  replacementAttemptCount: number
+}
+
 export interface LaunchInput {
   description: string
   prompt: string

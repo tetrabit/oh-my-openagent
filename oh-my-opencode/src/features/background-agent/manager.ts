@@ -3,6 +3,7 @@ import type { PluginInput } from "@opencode-ai/plugin"
 import type {
   BackgroundTask,
   LaunchInput,
+  RetiredSessionRecord,
   ResumeInput,
 } from "./types"
 import { TaskHistory } from "./task-history"
@@ -17,8 +18,8 @@ import {
   sendPromptWithFallbackRetry,
   createInternalAgentTextPart,
 } from "../../shared"
-import { setSessionTools } from "../../shared/session-tools-store"
-import { setSessionModel } from "../../shared/session-model-state"
+import { deleteSessionTools, setSessionTools } from "../../shared/session-tools-store"
+import { clearSessionModel, setSessionModel } from "../../shared/session-model-state"
 import { SessionCategoryRegistry } from "../../shared/session-category-registry"
 import { ConcurrencyManager } from "./concurrency"
 import type { AgentOverrides, BackgroundTaskConfig, CategoriesConfig, TmuxConfig } from "../../config/schema"
@@ -32,7 +33,7 @@ import {
   TASK_CLEANUP_DELAY_MS,
 } from "./constants"
 
-import { setSessionAgent, subagentSessions } from "../claude-code-session-state"
+import { clearSessionAgent, setSessionAgent, subagentSessions } from "../claude-code-session-state"
 import { getTaskToastManager } from "../task-toast-manager"
 import { formatDuration } from "./duration-formatter"
 import {
@@ -51,7 +52,9 @@ import { join } from "node:path"
 import { pruneStaleTasksAndNotifications } from "./task-poller"
 import { checkAndInterruptStaleTasks } from "./task-poller"
 import { getAgentConfigKey } from "../../shared/agent-display-names"
-import { setSessionFallbackChain } from "../../hooks/model-fallback/hook"
+import { clearSessionFallbackChain, setSessionFallbackChain } from "../../hooks/model-fallback/hook"
+
+const RETIRED_SESSION_ABORT_COOLDOWN_MS = 5000
 
 type OpencodeClient = PluginInput["client"]
 
@@ -118,6 +121,7 @@ export class BackgroundManager {
   private enableParentSessionNotifications: boolean
   private agentOverrides?: AgentOverrides
   private userCategories?: CategoriesConfig
+  private retiredSessionsBySessionID: Map<string, RetiredSessionRecord> = new Map()
   readonly taskHistory = new TaskHistory()
 
   constructor(
@@ -323,6 +327,18 @@ export class BackgroundManager {
     }
 
     const sessionID = createResult.data.id
+    if (task.status === "cancelled" || task.status === "error") {
+      this.concurrencyManager.release(concurrencyKey)
+      this.client.session.abort({
+        path: { id: sessionID },
+      }).catch(() => {})
+      log("[background-agent] Aborting newly created session for cancelled task:", {
+        taskId: task.id,
+        sessionID,
+        status: task.status,
+      })
+      return
+    }
     subagentSessions.add(sessionID)
     setSessionAgent(sessionID, input.agent)
     setSessionFallbackChain(sessionID, task.fallbackChain)
@@ -418,6 +434,13 @@ export class BackgroundManager {
       if (!result.usedFallback || !result.providerID || !result.modelID) {
         return
       }
+      if (task.sessionID !== sessionID || this.retiredSessionsBySessionID.has(sessionID)) {
+        log("[background-agent] Ignoring fallback result for superseded session:", {
+          taskId: task.id,
+          sessionID,
+        })
+        return
+      }
 
       task.model = {
         providerID: result.providerID,
@@ -495,6 +518,250 @@ export class BackgroundManager {
       }
     }
     return undefined
+  }
+
+  private getEventSessionID(event: Event): string | undefined {
+    const props = event.properties
+
+    if (event.type === "message.updated") {
+      const info = props?.info
+      if (!info || typeof info !== "object") return undefined
+      const sessionID = (info as Record<string, unknown>)["sessionID"]
+      return typeof sessionID === "string" ? sessionID : undefined
+    }
+
+    if (
+      event.type === "message.part.updated" ||
+      event.type === "message.part.delta" ||
+      event.type === "session.error" ||
+      event.type === "session.status" ||
+      event.type === "session.idle"
+    ) {
+      return typeof props?.sessionID === "string" ? props.sessionID : undefined
+    }
+
+    if (event.type === "session.deleted") {
+      return typeof props?.info?.id === "string" ? props.info.id : undefined
+    }
+
+    return undefined
+  }
+
+  private clearTrackedSessionState(sessionID: string): void {
+    clearSessionAgent(sessionID)
+    clearSessionFallbackChain(sessionID)
+    clearSessionModel(sessionID)
+    deleteSessionTools(sessionID)
+    SessionCategoryRegistry.remove(sessionID)
+  }
+
+  private removeTaskFromQueue(task: BackgroundTask): void {
+    const key = task.model
+      ? `${task.model.providerID}/${task.model.modelID}`
+      : task.agent
+    const queue = this.queuesByKey.get(key)
+    if (!queue) return
+
+    const index = queue.findIndex((item) => item.task.id === task.id)
+    if (index === -1) return
+
+    queue.splice(index, 1)
+    if (queue.length === 0) {
+      this.queuesByKey.delete(key)
+    }
+  }
+
+  private abandonDescendantTasks(sessionID: string, source: string): void {
+    const descendants = this.getAllDescendantTasks(sessionID)
+    if (descendants.length === 0) return
+
+    log("[background-agent] Abandoning descendant tasks for retired session:", {
+      sessionID,
+      source,
+      descendantTaskIds: descendants.map((task) => task.id),
+    })
+
+    for (const descendant of descendants) {
+      if (descendant.status === "pending") {
+        this.removeTaskFromQueue(descendant)
+      }
+
+      if (descendant.status === "running" || descendant.status === "pending") {
+        descendant.status = "cancelled"
+        descendant.completedAt = new Date()
+        descendant.error = `Superseded after fallback from session ${sessionID}`
+        this.taskHistory.record(descendant.parentSessionID, {
+          id: descendant.id,
+          sessionID: descendant.sessionID,
+          agent: descendant.agent,
+          description: descendant.description,
+          status: "cancelled",
+          category: descendant.category,
+          startedAt: descendant.startedAt,
+          completedAt: descendant.completedAt,
+        })
+      }
+
+      if (descendant.concurrencyKey) {
+        this.concurrencyManager.release(descendant.concurrencyKey)
+        descendant.concurrencyKey = undefined
+      }
+
+      const completionTimer = this.completionTimers.get(descendant.id)
+      if (completionTimer) {
+        clearTimeout(completionTimer)
+        this.completionTimers.delete(descendant.id)
+      }
+
+      const idleTimer = this.idleDeferralTimers.get(descendant.id)
+      if (idleTimer) {
+        clearTimeout(idleTimer)
+        this.idleDeferralTimers.delete(descendant.id)
+      }
+
+      this.cleanupPendingByParent(descendant)
+      this.clearNotificationsForTask(descendant.id)
+
+      const toastManager = getTaskToastManager()
+      if (toastManager) {
+        toastManager.removeTask(descendant.id)
+      }
+
+      if (descendant.sessionID) {
+        this.retireSession({
+          sessionID: descendant.sessionID,
+          task: descendant,
+          source: `${source}:descendant`,
+          attemptCount: descendant.attemptCount,
+          retireDescendants: false,
+        })
+        this.client.session.abort({
+          path: { id: descendant.sessionID },
+        }).catch(() => {})
+      }
+
+      this.tasks.delete(descendant.id)
+    }
+  }
+
+  private retireSession(input: {
+    sessionID: string
+    task: BackgroundTask
+    source: string
+    replacementModel?: { providerID: string; modelID: string; variant?: string }
+    attemptCount?: number
+    retireDescendants?: boolean
+  }): void {
+    const existing = this.retiredSessionsBySessionID.get(input.sessionID)
+    const now = new Date()
+    const attemptCount = input.attemptCount ?? input.task.attemptCount ?? 0
+
+    this.retiredSessionsBySessionID.set(input.sessionID, {
+      sessionID: input.sessionID,
+      taskID: input.task.id,
+      parentSessionID: input.task.parentSessionID,
+      agent: input.task.agent,
+      source: input.source,
+      retiredAt: existing?.retiredAt ?? now,
+      abortRequestedAt: now,
+      abortAttempts: (existing?.abortAttempts ?? 0) + 1,
+      lastObservedAt: existing?.lastObservedAt,
+      lastObservedStatus: existing?.lastObservedStatus,
+      replacementModel: input.replacementModel,
+      replacementAttemptCount: attemptCount,
+    })
+
+    subagentSessions.add(input.sessionID)
+    this.clearTrackedSessionState(input.sessionID)
+    if (input.retireDescendants !== false) {
+      this.abandonDescendantTasks(input.sessionID, input.source)
+    }
+
+    log("[background-agent] Retired superseded session for fallback:", {
+      taskId: input.task.id,
+      sessionID: input.sessionID,
+      source: input.source,
+      replacementModel: input.replacementModel
+        ? `${input.replacementModel.providerID}/${input.replacementModel.modelID}`
+        : undefined,
+      attemptCount,
+    })
+  }
+
+  private cleanupRetiredSession(sessionID: string, reason: string): void {
+    const retired = this.retiredSessionsBySessionID.get(sessionID)
+    if (!retired) return
+
+    this.retiredSessionsBySessionID.delete(sessionID)
+    subagentSessions.delete(sessionID)
+    this.clearTrackedSessionState(sessionID)
+
+    log("[background-agent] Cleaned up retired session:", {
+      sessionID,
+      taskId: retired.taskID,
+      reason,
+      abortAttempts: retired.abortAttempts,
+      lastObservedStatus: retired.lastObservedStatus,
+    })
+  }
+
+  private maybeAbortRetiredSession(sessionID: string, reason: string): void {
+    const retired = this.retiredSessionsBySessionID.get(sessionID)
+    if (!retired) return
+
+    const now = Date.now()
+    const lastAbortAt = retired.abortRequestedAt?.getTime() ?? 0
+    if (lastAbortAt !== 0 && now - lastAbortAt < RETIRED_SESSION_ABORT_COOLDOWN_MS) {
+      return
+    }
+
+    retired.abortRequestedAt = new Date(now)
+    retired.abortAttempts += 1
+
+    log("[background-agent] Re-aborting retired session:", {
+      sessionID,
+      taskId: retired.taskID,
+      reason,
+      abortAttempts: retired.abortAttempts,
+      lastObservedStatus: retired.lastObservedStatus,
+    })
+
+    this.client.session.abort({
+      path: { id: sessionID },
+    }).catch(() => {})
+  }
+
+  private handleRetiredSessionEvent(event: Event, sessionID: string): boolean {
+    const retired = this.retiredSessionsBySessionID.get(sessionID)
+    if (!retired) return false
+
+    const statusType = event.type === "session.status"
+      ? (typeof (event.properties?.status as { type?: string } | undefined)?.type === "string"
+        ? (event.properties?.status as { type: string }).type
+        : undefined)
+      : undefined
+
+    retired.lastObservedAt = new Date()
+    retired.lastObservedStatus = statusType ?? event.type
+
+    if (event.type === "session.deleted") {
+      this.cleanupRetiredSession(sessionID, "session.deleted")
+      return false
+    }
+
+    if (event.type === "session.idle" || event.type === "session.error" || statusType === "idle") {
+      this.cleanupRetiredSession(sessionID, event.type)
+      return true
+    }
+
+    log("[background-agent] Suppressing activity from retired session:", {
+      sessionID,
+      taskId: retired.taskID,
+      eventType: event.type,
+      statusType,
+    })
+    this.maybeAbortRetiredSession(sessionID, `retired activity via ${event.type}`)
+    return true
   }
 
   private getConcurrencyKeyFromInput(input: LaunchInput): string {
@@ -714,6 +981,13 @@ export class BackgroundManager {
       if (!result.usedFallback || !result.providerID || !result.modelID || !existingTask.sessionID) {
         return
       }
+      if (existingTask.sessionID !== input.sessionId || this.retiredSessionsBySessionID.has(input.sessionId)) {
+        log("[background-agent] Ignoring resume fallback result for superseded session:", {
+          taskId: existingTask.id,
+          sessionID: input.sessionId,
+        })
+        return
+      }
 
       existingTask.model = {
         providerID: result.providerID,
@@ -725,6 +999,13 @@ export class BackgroundManager {
         modelID: result.modelID,
       })
     }).catch((error) => {
+      if (existingTask.sessionID !== input.sessionId || this.retiredSessionsBySessionID.has(input.sessionId)) {
+        log("[background-agent] Ignoring resume prompt error for superseded session:", {
+          taskId: existingTask.id,
+          sessionID: input.sessionId,
+        })
+        return
+      }
       log("[background-agent] resume prompt error:", error)
       existingTask.status = "interrupt"
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -773,6 +1054,11 @@ export class BackgroundManager {
 
   handleEvent(event: Event): void {
     const props = event.properties
+    const eventSessionID = this.getEventSessionID(event)
+
+    if (eventSessionID && this.handleRetiredSessionEvent(event, eventSessionID)) {
+      return
+    }
 
     if (event.type === "message.updated") {
       const info = props?.info
@@ -972,8 +1258,7 @@ export class BackgroundManager {
     errorInfo: { name?: string; message?: string },
     source: string,
   ): boolean {
-    const previousSessionID = task.sessionID
-    const result = tryFallbackRetry({
+    return tryFallbackRetry({
       task,
       errorInfo,
       source,
@@ -982,11 +1267,10 @@ export class BackgroundManager {
       idleDeferralTimers: this.idleDeferralTimers,
       queuesByKey: this.queuesByKey,
       processKey: (key: string) => this.processKey(key),
+      onRetireSession: (input) => {
+        this.retireSession(input)
+      },
     })
-    if (result && previousSessionID) {
-      subagentSessions.delete(previousSessionID)
-    }
-    return result
   }
 
   markForNotification(task: BackgroundTask): void {
@@ -1103,19 +1387,10 @@ export class BackgroundManager {
     const reason = options?.reason
 
     if (task.status === "pending") {
+      this.removeTaskFromQueue(task)
       const key = task.model
         ? `${task.model.providerID}/${task.model.modelID}`
         : task.agent
-      const queue = this.queuesByKey.get(key)
-      if (queue) {
-        const index = queue.findIndex(item => item.task.id === taskId)
-        if (index !== -1) {
-          queue.splice(index, 1)
-          if (queue.length === 0) {
-            this.queuesByKey.delete(key)
-          }
-        }
-      }
       log("[background-agent] Cancelled pending task:", { taskId, key })
     }
 
@@ -1470,7 +1745,24 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
     for (const task of this.tasks.values()) {
       if (task.status === "running") return true
     }
-    return false
+    return this.retiredSessionsBySessionID.size > 0
+  }
+
+  private pollRetiredSessions(allStatuses: Record<string, { type: string }>): void {
+    for (const [sessionID, retired] of this.retiredSessionsBySessionID.entries()) {
+      const sessionStatus = allStatuses[sessionID]
+      if (!sessionStatus) continue
+
+      retired.lastObservedAt = new Date()
+      retired.lastObservedStatus = sessionStatus.type
+
+      if (sessionStatus.type === "idle") {
+        this.cleanupRetiredSession(sessionID, "polling (idle status)")
+        continue
+      }
+
+      this.maybeAbortRetiredSession(sessionID, `polling (${sessionStatus.type})`)
+    }
   }
 
   private pruneStaleTasksAndNotifications(): void {
@@ -1540,6 +1832,7 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
     const allStatuses = normalizeSDKResponse(statusResult, {} as Record<string, { type: string }>)
 
     await this.checkAndInterruptStaleTasks(allStatuses)
+    this.pollRetiredSessions(allStatuses)
 
     for (const task of this.tasks.values()) {
       if (task.status !== "running") continue
@@ -1624,6 +1917,13 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
       }
     }
 
+    for (const sessionID of this.retiredSessionsBySessionID.keys()) {
+      this.client.session.abort({
+        path: { id: sessionID },
+      }).catch(() => {})
+      this.cleanupRetiredSession(sessionID, "shutdown")
+    }
+
     // Notify shutdown listeners (e.g., tmux cleanup)
     if (this.onShutdown) {
       try {
@@ -1658,6 +1958,7 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
     this.notificationQueueByParent.clear()
     this.queuesByKey.clear()
     this.processingKeys.clear()
+    this.retiredSessionsBySessionID.clear()
     this.unregisterProcessCleanup()
     log("[background-agent] Shutdown complete")
 

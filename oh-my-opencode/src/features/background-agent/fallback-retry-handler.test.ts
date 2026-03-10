@@ -61,6 +61,7 @@ function createMockClient() {
 
 function createDefaultArgs(taskOverrides: Partial<BackgroundTask> = {}) {
   const processKeyFn = mock(() => {})
+  const onRetireSession = mock(() => {})
   const queuesByKey = new Map<string, Array<{ task: BackgroundTask; input: any }>>()
   const idleDeferralTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const concurrencyManager = createMockConcurrencyManager()
@@ -76,6 +77,7 @@ function createDefaultArgs(taskOverrides: Partial<BackgroundTask> = {}) {
     idleDeferralTimers,
     queuesByKey,
     processKey: processKeyFn,
+    onRetireSession,
   }
 }
 
@@ -172,6 +174,24 @@ describe("tryFallbackRetry", () => {
       })
     })
 
+    test("retires existing session before requeueing fallback", () => {
+      const args = createDefaultArgs({ sessionID: "session-to-retire" })
+
+      tryFallbackRetry(args)
+
+      expect(args.onRetireSession).toHaveBeenCalledWith({
+        sessionID: "session-to-retire",
+        task: args.task,
+        source: "polling",
+        replacementModel: {
+          providerID: "provider-a",
+          modelID: "fallback-model-1",
+          variant: undefined,
+        },
+        attemptCount: 1,
+      })
+    })
+
     test("adds retry input to queue and calls processKey", () => {
       const args = createDefaultArgs()
 
@@ -242,6 +262,7 @@ describe("tryFallbackRetry", () => {
       tryFallbackRetry(args)
 
       expect(args.client.session.abort).not.toHaveBeenCalled()
+      expect(args.onRetireSession).not.toHaveBeenCalled()
     })
   })
 
