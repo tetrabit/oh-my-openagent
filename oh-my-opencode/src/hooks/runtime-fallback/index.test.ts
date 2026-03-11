@@ -199,6 +199,59 @@ describe("runtime-fallback", () => {
       expect(skipLog).toBeUndefined()
     })
 
+    test("should skip MCP session errors even when they include retryable status text", async () => {
+      const retriedModels: string[] = []
+      const hook = createRuntimeFallbackHook(
+        createMockPluginInput({
+          session: {
+            messages: async () => ({
+              data: [{ info: { role: "user" }, parts: [{ type: "text", text: "search the docs" }] }],
+            }),
+            promptAsync: async (args: unknown) => {
+              const model = (args as { body?: { model?: { providerID?: string; modelID?: string } } })?.body?.model
+              if (model?.providerID && model?.modelID) {
+                retriedModels.push(`${model.providerID}/${model.modelID}`)
+              }
+              return {}
+            },
+          },
+        }),
+        {
+          config: createMockConfig({ notify_on_fallback: false }),
+          pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.2"]),
+        }
+      )
+      const sessionID = "test-session-mcp-error"
+      SessionCategoryRegistry.register(sessionID, "test")
+
+      await hook.event({
+        event: {
+          type: "session.created",
+          properties: { info: { id: sessionID, model: "anthropic/claude-opus-4-5" } },
+        },
+      })
+
+      await hook.event({
+        event: {
+          type: "session.error",
+          properties: {
+            sessionID,
+            error: {
+              message:
+                'Search error (429): {"jsonrpc":"2.0","error":{"code":-32000,"message":"MCP server rate limit reached"}}',
+            },
+          },
+        },
+      })
+
+      expect(retriedModels).toEqual([])
+      const skipLog = logCalls.find(
+        (c) => c.msg.includes("Error not retryable") && (c.data as { sessionID?: string } | undefined)?.sessionID === sessionID
+      )
+      expect(skipLog).toBeDefined()
+      expect(skipLog?.data).toMatchObject({ errorType: "tool_mcp_error" })
+    })
+
     test("should trigger fallback for missing API key errors when fallback models are configured", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
@@ -1803,7 +1856,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toContain("anthropic/claude-opus-4-6")
     })
 
-    test("does not trigger fallback for Exa MCP search rate limit errors", async () => {
+    test("does not trigger fallback for MCP search rate limit errors", async () => {
       const retriedModels: string[] = []
 
       const hook = createRuntimeFallbackHook(
@@ -1867,7 +1920,7 @@ describe("runtime-fallback", () => {
         (c) => c.msg.includes("message.updated error not retryable") && (c.data as { sessionID?: string })?.sessionID === sessionID,
       )
       expect(skipLog).toBeDefined()
-      expect(skipLog?.data).toMatchObject({ errorType: "tool_search_error" })
+      expect(skipLog?.data).toMatchObject({ errorType: "tool_mcp_error" })
     })
 
     test("does NOT trigger fallback for normal type:error-free messages", async () => {

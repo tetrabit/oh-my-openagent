@@ -93,14 +93,11 @@ export function classifyErrorType(error: unknown): string | undefined {
   const errorName = extractErrorName(error)?.toLowerCase()
 
   if (
-    /search error\s*\(\d+\)/i.test(message) &&
-    (/\bjsonrpc\b/i.test(message) || /\bmcp\b/i.test(message) || /\bexa\b/i.test(message))
+    /\bjsonrpc\b/i.test(message) ||
+    /\bmcp\b/i.test(message) ||
+    /model context protocol/i.test(message)
   ) {
-    return "tool_search_error"
-  }
-
-  if (/exa'?s free mcp rate limit/i.test(message)) {
-    return "tool_search_error"
+    return "tool_mcp_error"
   }
 
   if (
@@ -179,7 +176,7 @@ export function isRetryableError(error: unknown, retryOnErrors: number[]): boole
   const message = getErrorMessage(error)
   const errorType = classifyErrorType(error)
 
-  if (errorType === "tool_search_error") {
+  if (errorType === "tool_mcp_error") {
     return false
   }
 
