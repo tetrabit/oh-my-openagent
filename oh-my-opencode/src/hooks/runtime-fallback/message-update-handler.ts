@@ -88,6 +88,9 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
       if (state?.pendingFallbackModel) {
         state.pendingFallbackModel = undefined
       }
+      if (state && state.currentModel !== state.originalModel) {
+        state.mirrorFallbackOnNextUserTurn = true
+      }
       log(`[${HOOK_NAME}] Assistant response observed; cleared fallback timeout`, { sessionID, model })
       return
     }

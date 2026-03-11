@@ -8,6 +8,7 @@ export interface FallbackState {
   failedModels: Map<string, number>
   attemptCount: number
   pendingFallbackModel?: string
+  mirrorFallbackOnNextUserTurn: boolean
 }
 
 export interface FallbackResult {

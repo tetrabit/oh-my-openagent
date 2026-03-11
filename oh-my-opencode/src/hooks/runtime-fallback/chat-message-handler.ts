@@ -29,30 +29,48 @@ export function createChatMessageHandler(deps: HookDeps) {
         return
       }
 
-      const shouldKeepFallbackWhileOriginalInCooldown =
+      const shouldMirrorFallbackOnNextUserTurn =
+        state.mirrorFallbackOnNextUserTurn &&
         requestedModel === state.originalModel &&
-        state.currentModel !== state.originalModel &&
-        isModelInCooldown(requestedModel, state, config.cooldown_seconds)
+        state.currentModel !== state.originalModel
 
-      if (shouldKeepFallbackWhileOriginalInCooldown) {
-        log(`[${HOOK_NAME}] Keeping fallback model while original model is in cooldown`, {
+      if (shouldMirrorFallbackOnNextUserTurn) {
+        log(`[${HOOK_NAME}] Mirroring fallback model on next normal user turn`, {
           sessionID,
           originalModel: state.originalModel,
           activeModel: state.currentModel,
         })
+        state.mirrorFallbackOnNextUserTurn = false
       } else {
-        log(`[${HOOK_NAME}] Detected manual model change, resetting fallback state`, {
-          sessionID,
-          from: state.currentModel,
-          to: requestedModel,
-        })
-        state = createFallbackState(requestedModel)
-        sessionStates.set(sessionID, state)
-        return
+        const shouldKeepFallbackWhileOriginalInCooldown =
+          requestedModel === state.originalModel &&
+          state.currentModel !== state.originalModel &&
+          isModelInCooldown(requestedModel, state, config.cooldown_seconds)
+
+        if (shouldKeepFallbackWhileOriginalInCooldown) {
+          log(`[${HOOK_NAME}] Keeping fallback model while original model is in cooldown`, {
+            sessionID,
+            originalModel: state.originalModel,
+            activeModel: state.currentModel,
+          })
+        } else {
+          log(`[${HOOK_NAME}] Detected manual model change, resetting fallback state`, {
+            sessionID,
+            from: state.currentModel,
+            to: requestedModel,
+          })
+          state = createFallbackState(requestedModel)
+          sessionStates.set(sessionID, state)
+          return
+        }
       }
     }
 
     if (state.currentModel === state.originalModel) return
+
+    if (state.mirrorFallbackOnNextUserTurn) {
+      state.mirrorFallbackOnNextUserTurn = false
+    }
 
     const activeModel = state.currentModel
 

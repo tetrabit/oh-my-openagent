@@ -2127,6 +2127,106 @@ describe("runtime-fallback", () => {
       expect(output.message.model).toEqual({ providerID: "github-copilot", modelID: "claude-sonnet-4.5" })
     })
 
+    test("mirrors the successful fallback model on the next normal user turn even after cooldown expires", async () => {
+      const messages: Array<{
+        info: { role: string; model?: string; sessionID?: string }
+        parts: Array<{ type: string; text: string }>
+      }> = [
+        {
+          info: { role: "user" },
+          parts: [{ type: "text", text: "hello" }],
+        },
+      ]
+
+      const hook = createRuntimeFallbackHook(
+        createMockPluginInput({
+          session: {
+            messages: async () => ({ data: messages }),
+            promptAsync: async () => ({}),
+          },
+        }),
+        {
+          config: createMockConfig({ notify_on_fallback: false, cooldown_seconds: 0 }),
+          pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.4"]),
+        }
+      )
+      const sessionID = "test-session-mirror-next-turn"
+      SessionCategoryRegistry.register(sessionID, "test")
+
+      await hook.event({
+        event: {
+          type: "session.created",
+          properties: { info: { id: sessionID, model: "anthropic/claude-opus-4.6" } },
+        },
+      })
+
+      await hook.event({
+        event: {
+          type: "session.error",
+          properties: {
+            sessionID,
+            error: {
+              statusCode: 429,
+              message: "This request would exceed your account's rate limit. Please try again later.",
+            },
+          },
+        },
+      })
+
+      messages.push({
+        info: {
+          role: "assistant",
+          sessionID,
+          model: "openai/gpt-5.4",
+        },
+        parts: [{ type: "text", text: "Fallback response" }],
+      })
+
+      await hook.event({
+        event: {
+          type: "message.updated",
+          properties: {
+            info: {
+              sessionID,
+              role: "assistant",
+              model: "openai/gpt-5.4",
+            },
+            parts: [{ type: "text", text: "Fallback response" }],
+          },
+        },
+      })
+
+      const firstOutput: { message: { model?: { providerID: string; modelID: string } }; parts: Array<{ type: string; text?: string }> } = {
+        message: {},
+        parts: [],
+      }
+
+      await hook["chat.message"]?.(
+        {
+          sessionID,
+          model: { providerID: "anthropic", modelID: "claude-opus-4.6" },
+        },
+        firstOutput
+      )
+
+      expect(firstOutput.message.model).toEqual({ providerID: "openai", modelID: "gpt-5.4" })
+
+      const secondOutput: { message: { model?: { providerID: string; modelID: string } }; parts: Array<{ type: string; text?: string }> } = {
+        message: {},
+        parts: [],
+      }
+
+      await hook["chat.message"]?.(
+        {
+          sessionID,
+          model: { providerID: "anthropic", modelID: "claude-opus-4.6" },
+        },
+        secondOutput
+      )
+
+      expect(secondOutput.message.model).toBeUndefined()
+    })
+
     test("should notify when fallback occurs", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: true }),

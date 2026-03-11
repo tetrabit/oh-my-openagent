@@ -11,6 +11,7 @@ export function createFallbackState(originalModel: string): FallbackState {
     failedModels: new Map<string, number>(),
     attemptCount: 0,
     pendingFallbackModel: undefined,
+    mirrorFallbackOnNextUserTurn: false,
   }
 }
 
