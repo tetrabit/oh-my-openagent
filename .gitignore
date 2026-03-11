@@ -1,5 +1,6 @@
 # Dependencies
-.sisyphus/
+.sisyphus/*
+!.sisyphus/rules/
 node_modules/
 
 # Build output
@@ -37,3 +38,4 @@ oauth-success.html
 
 # Local backup archives
 .git-backups/
+*.bun-build

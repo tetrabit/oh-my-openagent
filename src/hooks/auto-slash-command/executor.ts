@@ -7,14 +7,16 @@ import {
   sanitizeModelField,
   getClaudeConfigDir,
   getOpenCodeConfigDir,
+  discoverPluginCommandDefinitions,
 } from "../../shared"
+import { loadBuiltinCommands } from "../../features/builtin-commands"
 import type { CommandFrontmatter } from "../../features/claude-code-command-loader/types"
 import { isMarkdownFile } from "../../shared/file-utils"
 import { discoverAllSkills, type LoadedSkill, type LazyContentLoader } from "../../features/opencode-skill-loader"
 import type { ParsedSlashCommand } from "./types"
 
 interface CommandScope {
-  type: "user" | "project" | "opencode" | "opencode-project" | "skill"
+  type: "user" | "project" | "opencode" | "opencode-project" | "skill" | "builtin" | "plugin"
 }
 
 interface CommandMetadata {
@@ -98,6 +100,25 @@ function skillToCommandInfo(skill: LoadedSkill): CommandInfo {
 
 export interface ExecutorOptions {
   skills?: LoadedSkill[]
+  pluginsEnabled?: boolean
+  enabledPluginsOverride?: Record<string, boolean>
+}
+
+function discoverPluginCommands(options?: ExecutorOptions): CommandInfo[] {
+  const pluginDefinitions = discoverPluginCommandDefinitions(options)
+
+  return Object.entries(pluginDefinitions).map(([name, definition]) => ({
+    name,
+    metadata: {
+      name,
+      description: definition.description || "",
+      model: definition.model,
+      agent: definition.agent,
+      subtask: definition.subtask,
+    },
+    content: definition.template,
+    scope: "plugin",
+  }))
 }
 
 async function discoverAllCommands(options?: ExecutorOptions): Promise<CommandInfo[]> {
@@ -111,16 +132,32 @@ async function discoverAllCommands(options?: ExecutorOptions): Promise<CommandIn
   const opencodeGlobalCommands = discoverCommandsFromDir(opencodeGlobalDir, "opencode")
   const projectCommands = discoverCommandsFromDir(projectCommandsDir, "project")
   const opencodeProjectCommands = discoverCommandsFromDir(opencodeProjectDir, "opencode-project")
+  const builtinCommandsMap = loadBuiltinCommands()
+  const builtinCommands: CommandInfo[] = Object.values(builtinCommandsMap).map(cmd => ({
+    name: cmd.name,
+    metadata: {
+      name: cmd.name,
+      description: cmd.description || "",
+      model: cmd.model,
+      agent: cmd.agent,
+      subtask: cmd.subtask,
+    },
+    content: cmd.template,
+    scope: "builtin",
+  }))
 
   const skills = options?.skills ?? await discoverAllSkills()
   const skillCommands = skills.map(skillToCommandInfo)
+  const pluginCommands = discoverPluginCommands(options)
 
   return [
+    ...builtinCommands,
     ...opencodeProjectCommands,
     ...projectCommands,
     ...opencodeGlobalCommands,
     ...userCommands,
     ...skillCommands,
+    ...pluginCommands,
   ]
 }
 
@@ -164,7 +201,11 @@ async function formatCommandTemplate(cmd: CommandInfo, args: string): Promise<st
   const commandDir = cmd.path ? dirname(cmd.path) : process.cwd()
   const withFileRefs = await resolveFileReferencesInText(content, commandDir)
   const resolvedContent = await resolveCommandsInText(withFileRefs)
-  sections.push(resolvedContent.trim())
+  const resolvedArguments = args
+  const substitutedContent = resolvedContent
+    .replace(/\$\{user_message\}/g, resolvedArguments)
+    .replace(/\$ARGUMENTS/g, resolvedArguments)
+  sections.push(substitutedContent.trim())
 
   if (args) {
     sections.push("\n\n---\n")
@@ -187,7 +228,7 @@ export async function executeSlashCommand(parsed: ParsedSlashCommand, options?: 
   if (!command) {
     return {
       success: false,
-      error: `Command "/${parsed.command}" not found. Use the slashcommand tool to list available commands.`,
+      error: `Command "/${parsed.command}" not found. Use the skill tool to list available skills and commands.`,
     }
   }
 
