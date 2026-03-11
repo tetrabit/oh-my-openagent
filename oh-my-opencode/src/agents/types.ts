@@ -80,6 +80,11 @@ export function isGptModel(model: string): boolean {
   return GPT_MODEL_PREFIXES.some((prefix) => modelName.startsWith(prefix))
 }
 
+export function isGpt5_4Model(model: string): boolean {
+  const modelName = extractModelName(model).toLowerCase()
+  return modelName.includes("gpt-5.4") || modelName.includes("gpt-5-4")
+}
+
 const GEMINI_PROVIDERS = ["google/", "google-vertex/"]
 
 export function isGeminiModel(model: string): boolean {

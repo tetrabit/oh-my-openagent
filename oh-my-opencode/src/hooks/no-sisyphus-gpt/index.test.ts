@@ -43,10 +43,31 @@ describe("no-sisyphus-gpt hook", () => {
     expect(showToast.mock.calls[0]?.[0]).toMatchObject({
       body: {
         title: "NEVER Use Sisyphus with GPT",
-        message: expect.stringContaining("For GPT models, always use Hephaestus."),
+        message: expect.stringContaining("For GPT models other than GPT-5.4, always use Hephaestus."),
         variant: "error",
       },
     })
+  })
+
+  test("does not rewrite sisyphus when using GPT-5.4", async () => {
+    // given - sisyphus with GPT-5.4 fallback model
+    const showToast = spyOn({ fn: async () => ({}) }, "fn")
+    const hook = createNoSisyphusGptHook({
+      client: { tui: { showToast } },
+    } as any)
+
+    const output = createOutput()
+
+    // when - chat.message runs on GPT-5.4
+    await hook["chat.message"]?.({
+      sessionID: "ses_gpt54",
+      agent: SISYPHUS_DISPLAY,
+      model: { providerID: "openai", modelID: "gpt-5.4" },
+    }, output)
+
+    // then - keep sisyphus and do not toast
+    expect(showToast).toHaveBeenCalledTimes(0)
+    expect(output.message.agent).toBeUndefined()
   })
 
   test("does not show toast for non-gpt model", async () => {
