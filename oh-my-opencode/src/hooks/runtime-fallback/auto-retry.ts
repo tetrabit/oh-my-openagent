@@ -8,20 +8,16 @@ import { getSessionAgent } from "../../features/claude-code-session-state"
 import { getFallbackModelsForSession } from "./fallback-models"
 import { prepareFallback } from "./fallback-state"
 import { SessionCategoryRegistry } from "../../shared/session-category-registry"
+import {
+  createFallbackResumePrompt,
+  findFallbackResumeAnchor,
+  type FallbackResumeMessage,
+} from "./resume-prompt"
 
 const SESSION_TTL_MS = 30 * 60 * 1000
 
 declare function setTimeout(callback: () => void | Promise<void>, delay?: number): ReturnType<typeof globalThis.setTimeout>
 declare function clearTimeout(timeout: ReturnType<typeof globalThis.setTimeout>): void
-
-function createFallbackResumePrompt(source: string, newModel: string): string {
-  return [
-    `Internal runtime fallback handoff (${source}, ${newModel}).`,
-    "Resume the interrupted task in this existing session using the conversation context already present.",
-    "Do not ask the user to restate the task.",
-    "Continue from the point of interruption.",
-  ].join(" ")
-}
 
 export function createAutoRetryHelpers(deps: HookDeps) {
   const { ctx, config, options, sessionStates, sessionLastAccess, sessionRetryInFlight, sessionAwaitingFallbackResult, sessionFallbackTimeouts, pluginConfig } = deps
@@ -122,13 +118,9 @@ export function createAutoRetryHelpers(deps: HookDeps) {
         path: { id: sessionID },
         query: { directory: ctx.directory },
       })
-      const msgs = (messagesResp as {
-        data?: Array<{
-          info?: Record<string, unknown>
-          parts?: Array<{ type?: string; text?: string }>
-        }>
-      }).data
-      const lastUserMsg = msgs?.filter((m) => m.info?.role === "user").pop()
+      const msgs = (messagesResp as { data?: FallbackResumeMessage[] }).data
+      const anchor = Array.isArray(msgs) ? findFallbackResumeAnchor(msgs) : undefined
+      const lastUserMsg = anchor?.message ?? msgs?.filter((m) => m.info?.role === "user").pop()
       const lastUserTools =
         typeof lastUserMsg?.info?.tools === "object" && lastUserMsg.info.tools !== null
           ? (lastUserMsg.info.tools as Record<string, boolean | "allow" | "deny" | "ask">)
@@ -159,7 +151,7 @@ export function createAutoRetryHelpers(deps: HookDeps) {
             ...(retryAgent ? { agent: retryAgent } : {}),
             ...(retryTools ? { tools: retryTools } : {}),
             model: fallbackModelObj,
-            parts: [createInternalAgentTextPart(createFallbackResumePrompt(source, newModel))],
+            parts: [createInternalAgentTextPart(createFallbackResumePrompt(source, newModel, msgs))],
           },
           query: { directory: ctx.directory },
         })

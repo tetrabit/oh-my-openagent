@@ -2146,7 +2146,7 @@ describe("runtime-fallback", () => {
       expect(callBody?.model).toEqual({ providerID: "github-copilot", modelID: "claude-opus-4.6" })
     })
 
-    test("should hand off runtime fallback with inherited tools instead of replaying raw user text", async () => {
+    test("should hand off runtime fallback with the last real user prompt and partial assistant output", async () => {
       const promptCalls: Array<Record<string, unknown>> = []
       const hook = createRuntimeFallbackHook(
         createMockPluginInput({
@@ -2167,6 +2167,24 @@ describe("runtime-fallback", () => {
                     },
                   },
                   parts: [{ type: "text", text: "please continue the task" }],
+                },
+                {
+                  info: { role: "assistant" },
+                  parts: [{ type: "text", text: "I inspected the failing path and isolated the fallback logic." }],
+                },
+                {
+                  info: {
+                    role: "user",
+                    agent: "prometheus",
+                  },
+                  parts: [{
+                    type: "text",
+                    text: `Internal runtime fallback handoff (session.timeout, openai/gpt-5.4).\n${sharedModule.OMO_INTERNAL_INITIATOR_MARKER}`,
+                  }],
+                },
+                {
+                  info: { role: "assistant" },
+                  parts: [{ type: "text", text: "The last successful step was preparing the retry payload." }],
                 },
               ],
             }),
@@ -2204,9 +2222,16 @@ describe("runtime-fallback", () => {
       expect(retryParts).toHaveLength(1)
       expect(retryParts?.[0]?.text).toContain(sharedModule.OMO_INTERNAL_INITIATOR_MARKER)
       expect(retryParts?.[0]?.text).toContain("Resume the interrupted task in this existing session")
+      expect(retryParts?.[0]?.text).toContain("Use the last real user prompt and any assistant output below as continuation anchors")
       expect(retryParts?.[0]?.text).toContain("Do not ask the user to restate the task")
+      expect(retryParts?.[0]?.text).toContain("Do not restart from the beginning")
       expect(retryParts?.[0]?.text).toContain("Continue from the point of interruption")
-      expect(retryParts?.[0]?.text).not.toContain("please continue the task")
+      expect(retryParts?.[0]?.text).toContain("Last user prompt:")
+      expect(retryParts?.[0]?.text).toContain("please continue the task")
+      expect(retryParts?.[0]?.text).toContain("Assistant output before interruption:")
+      expect(retryParts?.[0]?.text).toContain("I inspected the failing path and isolated the fallback logic.")
+      expect(retryParts?.[0]?.text).toContain("The last successful step was preparing the retry payload.")
+      expect(retryParts?.[0]?.text).not.toContain("Internal runtime fallback handoff (session.timeout, openai/gpt-5.4).")
     })
   })
 
