@@ -6,7 +6,11 @@ import { _resetForTesting, setMainSession } from "../features/claude-code-sessio
 import { createModelFallbackHook, clearPendingModelFallback } from "../hooks/model-fallback/hook"
 
 describe("createEventHandler - model fallback", () => {
-  const createHandler = (args?: { hooks?: any; messages?: Array<Record<string, unknown>> }) => {
+  const createHandler = (args?: {
+    hooks?: any
+    messages?: Array<Record<string, unknown>>
+    pluginConfig?: Record<string, unknown>
+  }) => {
     const abortCalls: string[] = []
     const promptCalls: string[] = []
     const promptBodies: Array<Record<string, unknown>> = []
@@ -36,7 +40,7 @@ describe("createEventHandler - model fallback", () => {
           },
         },
       } as any,
-      pluginConfig: {} as any,
+      pluginConfig: (args?.pluginConfig ?? {}) as any,
       firstMessageVariantGate: {
         markSessionCreated: () => {},
         clear: () => {},
@@ -280,6 +284,46 @@ describe("createEventHandler - model fallback", () => {
       modelID: "claude-opus-4-6",
     })
     expect(output.message["variant"]).toBe("max")
+  })
+
+  test("does not route session.status retry through model-fallback when runtime fallback is enabled", async () => {
+    //#given
+    const sessionID = "ses_status_retry_runtime_fallback"
+    setMainSession(sessionID)
+    clearPendingModelFallback(sessionID)
+
+    const modelFallback = createModelFallbackHook()
+
+    const { handler, abortCalls, promptCalls } = createHandler({
+      hooks: {
+        modelFallback,
+        runtimeFallback: {},
+      },
+      pluginConfig: {
+        runtime_fallback: true,
+      },
+    })
+
+    //#when
+    await handler({
+      event: {
+        type: "session.status",
+        properties: {
+          sessionID,
+          status: {
+            type: "retry",
+            attempt: 1,
+            message:
+              "Bad Gateway: {\"error\":{\"message\":\"unknown provider for model claude-opus-4-6-thinking\"}}",
+            next: 1234,
+          },
+        },
+      },
+    })
+
+    //#then
+    expect(abortCalls).toEqual([])
+    expect(promptCalls).toEqual([])
   })
 
   test("advances main-session fallback chain across repeated session.error retries end-to-end", async () => {

@@ -2,7 +2,7 @@ import type { HookDeps } from "./types"
 import type { AutoRetryHelpers } from "./auto-retry"
 import { HOOK_NAME } from "./constants"
 import { log } from "../../shared/logger"
-import { extractStatusCode, extractErrorName, classifyErrorType, isRetryableError, extractAutoRetrySignal, containsErrorContent } from "./error-classifier"
+import { extractStatusCode, extractErrorName, classifyErrorType, isAbortLikeError, isRetryableError, extractAutoRetrySignal, containsErrorContent } from "./error-classifier"
 import { createFallbackState, prepareFallback } from "./fallback-state"
 import { getFallbackModelsForSession } from "./fallback-models"
 
@@ -94,6 +94,11 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
 
     if (sessionID && role === "assistant" && error) {
       const wasAwaitingFallbackResult = sessionAwaitingFallbackResult.has(sessionID)
+      if (wasAwaitingFallbackResult && isAbortLikeError(error)) {
+        log(`[${HOOK_NAME}] Ignoring assistant abort while awaiting fallback result`, { sessionID, model })
+        return
+      }
+
       sessionAwaitingFallbackResult.delete(sessionID)
       if (sessionRetryInFlight.has(sessionID) && !retrySignal) {
         if (wasAwaitingFallbackResult) {

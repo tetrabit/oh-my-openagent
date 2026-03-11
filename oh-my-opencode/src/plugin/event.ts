@@ -436,7 +436,7 @@ export function createEventHandler(args: {
       const sessionID = props?.sessionID as string | undefined;
       const status = props?.status as { type?: string; attempt?: number; message?: string; next?: number } | undefined;
 
-      if (sessionID && status?.type === "retry" && isModelFallbackEnabled) {
+      if (sessionID && status?.type === "retry" && isModelFallbackEnabled && !isRuntimeFallbackEnabled) {
         try {
           const retryMessage = typeof status.message === "string" ? status.message : "";
           const retryKey = `${status.attempt ?? "?"}:${status.next ?? "?"}:${retryMessage}`;

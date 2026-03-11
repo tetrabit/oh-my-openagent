@@ -73,6 +73,21 @@ export function extractErrorName(error: unknown): string | undefined {
   return undefined
 }
 
+export function isAbortLikeError(error: unknown): boolean {
+  const errorName = extractErrorName(error)?.toLowerCase()
+  const message = getErrorMessage(error)
+
+  if (errorName === "messageabortederror" || errorName === "aborterror") {
+    return true
+  }
+
+  if (errorName === "domexception" && message.includes("abort")) {
+    return true
+  }
+
+  return /aborted|cancelled|interrupted/.test(message)
+}
+
 export function classifyErrorType(error: unknown): string | undefined {
   const message = getErrorMessage(error)
   const errorName = extractErrorName(error)?.toLowerCase()

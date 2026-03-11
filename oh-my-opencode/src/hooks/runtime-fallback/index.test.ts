@@ -2569,4 +2569,185 @@ describe("runtime-fallback", () => {
       expect(fallbackLogs.length).toBeGreaterThanOrEqual(2)
     })
   })
+
+  describe("session.status retry handling", () => {
+    test("should use configured runtime fallback models for session.status retry", async () => {
+      const promptCalls: Array<{ body?: { agent?: string; model?: { providerID?: string; modelID?: string } } }> = []
+
+      const hook = createRuntimeFallbackHook(
+        createMockPluginInput({
+          session: {
+            messages: async () => ({
+              data: [
+                {
+                  info: {
+                    role: "user",
+                    agent: "sisyphus",
+                    tools: { bash: true },
+                  },
+                  parts: [{ type: "text", text: "hello" }],
+                },
+              ],
+            }),
+            promptAsync: async (args: unknown) => {
+              promptCalls.push(args as { body?: { agent?: string; model?: { providerID?: string; modelID?: string } } })
+              return {}
+            },
+          },
+        }),
+        {
+          config: createMockConfig({ notify_on_fallback: false }),
+          pluginConfig: {
+            agents: {
+              sisyphus: {
+                fallback_models: ["openai/gpt-5.4", "google/gemini-3.1-pro-preview"],
+              },
+            },
+          },
+        }
+      )
+      const sessionID = "test-session-status-runtime-fallback"
+
+      await hook.event({
+        event: {
+          type: "session.created",
+          properties: { info: { id: sessionID, model: "anthropic/claude-opus-4-6" } },
+        },
+      })
+
+      await hook.event({
+        event: {
+          type: "session.status",
+          properties: {
+            sessionID,
+            status: {
+              type: "retry",
+              attempt: 1,
+              message: "provider retrying request after rate limit",
+              next: 1000,
+            },
+          },
+        },
+      })
+
+      expect(promptCalls).toHaveLength(1)
+      expect(promptCalls[0]?.body?.agent).toBe("sisyphus")
+      expect(promptCalls[0]?.body?.model).toEqual({
+        providerID: "openai",
+        modelID: "gpt-5.4",
+      })
+    })
+
+    test("should ignore abort noise while awaiting fallback result and keep waiting for the fallback response", async () => {
+      const promptCalls: Array<{ body?: { model?: { providerID?: string; modelID?: string } } }> = []
+      const hook = createRuntimeFallbackHook(
+        createMockPluginInput({
+          session: {
+            messages: async () => ({
+              data: [
+                {
+                  info: {
+                    role: "user",
+                    agent: "sisyphus",
+                  },
+                  parts: [{ type: "text", text: "hello" }],
+                },
+              ],
+            }),
+            promptAsync: async (args: unknown) => {
+              promptCalls.push(args as { body?: { model?: { providerID?: string; modelID?: string } } })
+              return {}
+            },
+          },
+        }),
+        {
+          config: createMockConfig({ notify_on_fallback: false }),
+          pluginConfig: createMockPluginConfigWithCategoryFallback(["provider-a/model-a", "provider-b/model-b"]),
+        }
+      )
+      const sessionID = "test-session-status-abort-noise"
+      SessionCategoryRegistry.register(sessionID, "test")
+
+      await hook.event({
+        event: {
+          type: "session.created",
+          properties: { info: { id: sessionID, model: "google/gemini-2.5-pro" } },
+        },
+      })
+
+      await hook.event({
+        event: {
+          type: "session.status",
+          properties: {
+            sessionID,
+            status: {
+              type: "retry",
+              attempt: 1,
+              message: "provider retrying request after rate limit",
+              next: 1000,
+            },
+          },
+        },
+      })
+
+      await hook.event({
+        event: {
+          type: "session.error",
+          properties: {
+            sessionID,
+            error: { name: "MessageAbortedError", message: "The operation was aborted." },
+          },
+        },
+      })
+
+      await hook.event({
+        event: {
+          type: "message.updated",
+          properties: {
+            info: {
+              sessionID,
+              role: "assistant",
+              model: "provider-a/model-a",
+              error: { name: "MessageAbortedError", message: "The operation was aborted." },
+            },
+          },
+        },
+      })
+
+      await hook.event({
+        event: {
+          type: "session.status",
+          properties: {
+            sessionID,
+            status: {
+              type: "retry",
+              attempt: 2,
+              message: "provider retrying request after rate limit again",
+              next: 1000,
+            },
+          },
+        },
+      })
+
+      const ignoredSessionAbortLog = logCalls.find((call) =>
+        call.msg.includes("Ignoring abort error while awaiting fallback result")
+      )
+      expect(ignoredSessionAbortLog).toBeDefined()
+
+      const ignoredAssistantAbortLog = logCalls.find((call) =>
+        call.msg.includes("Ignoring assistant abort while awaiting fallback result")
+      )
+      expect(ignoredAssistantAbortLog).toBeDefined()
+
+      const awaitingRetryLog = logCalls.find((call) =>
+        call.msg.includes("Processing session.status retry while awaiting fallback result")
+      )
+      expect(awaitingRetryLog).toBeDefined()
+      expect(promptCalls).toHaveLength(2)
+      expect(promptCalls[1]?.body?.model).toEqual({
+        providerID: "provider-b",
+        modelID: "model-b",
+      })
+    })
+  })
 })
