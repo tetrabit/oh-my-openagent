@@ -188,7 +188,7 @@ fi
 
 BACKUP_DIR=""
 if [[ "$NO_BACKUP" -eq 0 ]]; then
-  BACKUP_DIR="$HOME/.opencode/backups/ohmyopencode-extension/$(date +%Y%m%d-%H%M%S)"
+  BACKUP_DIR="$HOME/.opencode/backups/oh-my-openagent/$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$BACKUP_DIR"
   log "Backing up existing install to $BACKUP_DIR"
   for bin_target in "${BIN_TARGETS[@]}"; do

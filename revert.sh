@@ -183,7 +183,7 @@ if [[ -d "$LOCAL_PLUGIN_DST" ]]; then
 fi
 
 if [[ "$NO_BACKUP" -eq 0 ]]; then
-  BACKUP_DIR="$HOME/.opencode/backups/ohmyopencode-extension-revert/$(date +%Y%m%d-%H%M%S)"
+  BACKUP_DIR="$HOME/.opencode/backups/oh-my-openagent-revert/$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$BACKUP_DIR"
   log "Backing up existing install to $BACKUP_DIR"
   backup_path "$OPENCODE_BIN_DST" "$BACKUP_DIR"
