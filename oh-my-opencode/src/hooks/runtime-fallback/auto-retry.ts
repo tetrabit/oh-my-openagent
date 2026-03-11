@@ -2,6 +2,7 @@ import type { HookDeps } from "./types"
 import { HOOK_NAME } from "./constants"
 import { log } from "../../shared/logger"
 import { createInternalAgentTextPart, resolveInheritedPromptTools } from "../../shared"
+import { getAgentDisplayName } from "../../shared/agent-display-names"
 import { normalizeAgentNameWithKnown, resolveAgentForSessionWithKnown } from "./agent-resolver"
 import { getSessionAgent } from "../../features/claude-code-session-state"
 import { getFallbackModelsForSession } from "./fallback-models"
@@ -131,13 +132,13 @@ export function createAutoRetryHelpers(deps: HookDeps) {
         })
 
         const retryAgent =
-          resolvedAgent ??
           (typeof lastUserMsg.info?.agent === "string" ? lastUserMsg.info.agent : undefined) ??
-          getSessionAgent(sessionID)
+          getSessionAgent(sessionID) ??
+          (resolvedAgent ? getAgentDisplayName(resolvedAgent) : undefined)
         const retryTools = resolveInheritedPromptTools(sessionID, lastUserTools)
 
         sessionAwaitingFallbackResult.add(sessionID)
-        scheduleSessionFallbackTimeout(sessionID, retryAgent)
+        scheduleSessionFallbackTimeout(sessionID, resolvedAgent)
 
         if (preemptInFlightRequest) {
           await abortSessionRequest(sessionID, `${source}.preempt`)

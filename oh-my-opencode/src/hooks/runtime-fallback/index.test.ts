@@ -2142,7 +2142,7 @@ describe("runtime-fallback", () => {
 
       expect(promptCalls.length).toBe(1)
       const callBody = promptCalls[0]?.body as Record<string, unknown>
-      expect(callBody?.agent).toBe("prometheus")
+      expect(callBody?.agent).toBe("Prometheus (Plan Builder)")
       expect(callBody?.model).toEqual({ providerID: "github-copilot", modelID: "claude-opus-4.6" })
     })
 
@@ -2583,7 +2583,7 @@ describe("runtime-fallback", () => {
                 {
                   info: {
                     role: "user",
-                    agent: "sisyphus",
+                    agent: "Sisyphus (Ultraworker)",
                     tools: { bash: true },
                   },
                   parts: [{ type: "text", text: "hello" }],
@@ -2637,7 +2637,88 @@ describe("runtime-fallback", () => {
 
       expect(promptCalls).toHaveLength(1)
       expect(abortCalls.some((call) => call.path?.id === sessionID)).toBe(true)
-      expect(promptCalls[0]?.body?.agent).toBe("sisyphus")
+      expect(promptCalls[0]?.body?.agent).toBe("Sisyphus (Ultraworker)")
+      expect(promptCalls[0]?.body?.model).toEqual({
+        providerID: "openai",
+        modelID: "gpt-5.4",
+      })
+    })
+
+    test("should fall back to the display-name agent when the retry context only has the canonical config key", async () => {
+      const promptCalls: Array<{ body?: { agent?: string; model?: { providerID?: string; modelID?: string } } }> = []
+
+      const hook = createRuntimeFallbackHook(
+        createMockPluginInput({
+          session: {
+            messages: async () => ({
+              data: [
+                {
+                  info: {
+                    role: "user",
+                    tools: { bash: true },
+                  },
+                  parts: [{ type: "text", text: "hello" }],
+                },
+              ],
+            }),
+            promptAsync: async (args: unknown) => {
+              promptCalls.push(args as { body?: { agent?: string; model?: { providerID?: string; modelID?: string } } })
+              return {}
+            },
+          },
+        }),
+        {
+          config: createMockConfig({ notify_on_fallback: false }),
+          pluginConfig: {
+            agents: {
+              sisyphus: {
+                fallback_models: ["openai/gpt-5.4"],
+              },
+            },
+          },
+        }
+      )
+      const sessionID = "test-session-status-runtime-fallback-display-agent"
+
+      await hook.event({
+        event: {
+          type: "session.created",
+          properties: { info: { id: sessionID, model: "anthropic/claude-opus-4-6" } },
+        },
+      })
+
+      await hook["chat.message"]?.(
+        {
+          sessionID,
+          agent: "Sisyphus (Ultraworker)",
+          model: { providerID: "anthropic", modelID: "claude-opus-4-6" },
+        },
+        {
+          message: {
+            model: { providerID: "anthropic", modelID: "claude-opus-4-6" },
+          },
+          parts: [{ type: "text", text: "hello" }],
+        },
+      )
+
+      await hook.event({
+        event: {
+          type: "session.status",
+          properties: {
+            sessionID,
+            agent: "sisyphus",
+            status: {
+              type: "retry",
+              attempt: 1,
+              message: "provider retrying request after rate limit",
+              next: 1000,
+            },
+          },
+        },
+      })
+
+      expect(promptCalls).toHaveLength(1)
+      expect(promptCalls[0]?.body?.agent).toBe("Sisyphus (Ultraworker)")
       expect(promptCalls[0]?.body?.model).toEqual({
         providerID: "openai",
         modelID: "gpt-5.4",
