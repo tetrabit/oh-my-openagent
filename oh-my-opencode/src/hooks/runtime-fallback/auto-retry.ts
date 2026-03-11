@@ -14,6 +14,15 @@ const SESSION_TTL_MS = 30 * 60 * 1000
 declare function setTimeout(callback: () => void | Promise<void>, delay?: number): ReturnType<typeof globalThis.setTimeout>
 declare function clearTimeout(timeout: ReturnType<typeof globalThis.setTimeout>): void
 
+function createFallbackResumePrompt(source: string, newModel: string): string {
+  return [
+    `Internal runtime fallback handoff (${source}, ${newModel}).`,
+    "Resume the interrupted task in this existing session using the conversation context already present.",
+    "Do not ask the user to restate the task.",
+    "Continue from the point of interruption.",
+  ].join(" ")
+}
+
 export function createAutoRetryHelpers(deps: HookDeps) {
   const { ctx, config, options, sessionStates, sessionLastAccess, sessionRetryInFlight, sessionAwaitingFallbackResult, sessionFallbackTimeouts, pluginConfig } = deps
   const configuredAgentNames = Object.keys(deps.pluginConfig?.agents ?? {})
@@ -150,7 +159,7 @@ export function createAutoRetryHelpers(deps: HookDeps) {
             ...(retryAgent ? { agent: retryAgent } : {}),
             ...(retryTools ? { tools: retryTools } : {}),
             model: fallbackModelObj,
-            parts: [createInternalAgentTextPart("continue")],
+            parts: [createInternalAgentTextPart(createFallbackResumePrompt(source, newModel))],
           },
           query: { directory: ctx.directory },
         })

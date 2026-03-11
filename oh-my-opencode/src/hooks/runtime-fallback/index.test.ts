@@ -2203,6 +2203,9 @@ describe("runtime-fallback", () => {
       const retryParts = callBody?.parts as Array<{ text?: string }> | undefined
       expect(retryParts).toHaveLength(1)
       expect(retryParts?.[0]?.text).toContain(sharedModule.OMO_INTERNAL_INITIATOR_MARKER)
+      expect(retryParts?.[0]?.text).toContain("Resume the interrupted task in this existing session")
+      expect(retryParts?.[0]?.text).toContain("Do not ask the user to restate the task")
+      expect(retryParts?.[0]?.text).toContain("Continue from the point of interruption")
       expect(retryParts?.[0]?.text).not.toContain("please continue the task")
     })
   })
