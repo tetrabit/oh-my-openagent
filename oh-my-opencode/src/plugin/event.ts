@@ -15,7 +15,7 @@ import {
   clearSessionFallbackChain,
   setPendingModelFallback,
 } from "../hooks/model-fallback/hook";
-import { resetMessageCursor } from "../shared";
+import { createInternalAgentTextPart, resetMessageCursor, resolveInheritedPromptTools } from "../shared";
 import { log } from "../shared/logger";
 import { shouldRetryError } from "../shared/model-error-classifier";
 import { clearSessionModel, setSessionModel } from "../shared/session-model-state";
@@ -97,6 +97,35 @@ function extractProviderModelFromErrorMessage(message: string): { providerID?: s
 
   return {};
 }
+
+function extractPromptModel(info: Record<string, unknown> | undefined): { providerID: string; modelID: string } | undefined {
+  const embeddedModel = info?.model;
+  if (isRecord(embeddedModel)) {
+    const providerID = embeddedModel.providerID;
+    const modelID = embeddedModel.modelID;
+    if (typeof providerID === "string" && typeof modelID === "string") {
+      return { providerID, modelID };
+    }
+  }
+
+  const providerID = info?.providerID;
+  const modelID = info?.modelID;
+  if (typeof providerID === "string" && typeof modelID === "string") {
+    return { providerID, modelID };
+  }
+
+  return undefined;
+}
+
+function extractMessageList(response: unknown): Record<string, unknown>[] {
+  if (Array.isArray(response)) {
+    return response.filter(isRecord);
+  }
+  if (isRecord(response) && Array.isArray(response.data)) {
+    return response.data.filter(isRecord);
+  }
+  return [];
+}
 type EventInput = Parameters<NonNullable<NonNullable<CreatedHooks["writeExistingFileGuard"]>["event"]>>[0];
 export function createEventHandler(args: {
   ctx: PluginContext;
@@ -110,10 +139,29 @@ export function createEventHandler(args: {
     directory: string;
     client: {
       session: {
+        messages: (input: {
+          path: { id: string };
+          query?: { directory?: string };
+        }) => Promise<unknown>;
         abort: (input: { path: { id: string } }) => Promise<unknown>;
         prompt: (input: {
           path: { id: string };
-          body: { parts: Array<{ type: "text"; text: string }> };
+          body: {
+            parts: Array<{ type: "text"; text: string }>;
+            agent?: string;
+            model?: { providerID: string; modelID: string };
+            tools?: Record<string, boolean>;
+          };
+          query: { directory: string };
+        }) => Promise<unknown>;
+        promptAsync?: (input: {
+          path: { id: string };
+          body: {
+            parts: Array<{ type: "text"; text: string }>;
+            agent?: string;
+            model?: { providerID: string; modelID: string };
+            tools?: Record<string, boolean>;
+          };
           query: { directory: string };
         }) => Promise<unknown>;
       };
@@ -143,6 +191,53 @@ export function createEventHandler(args: {
   const lastHandledModelErrorMessageID = new Map<string, string>();
   const lastHandledRetryStatusKey = new Map<string, string>();
   const lastKnownModelBySession = new Map<string, { providerID: string; modelID: string }>();
+
+  const retryWithInheritedContext = async (sessionID: string): Promise<void> => {
+    let agent = getSessionAgent(sessionID);
+    let model = lastKnownModelBySession.get(sessionID);
+    let tools = resolveInheritedPromptTools(sessionID);
+
+    try {
+      const messagesResp = await pluginContext.client.session.messages({
+        path: { id: sessionID },
+        query: { directory: pluginContext.directory },
+      });
+      const messages = extractMessageList(messagesResp);
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i];
+        const info = isRecord(message.info) ? message.info : undefined;
+        if (!info || info.role !== "user") continue;
+
+        agent = typeof info.agent === "string" ? info.agent : agent;
+        model = extractPromptModel(info) ?? model;
+        tools = resolveInheritedPromptTools(
+          sessionID,
+          isRecord(info.tools) ? (info.tools as Record<string, boolean | "allow" | "deny" | "ask">) : undefined,
+        ) ?? tools;
+        break;
+      }
+    } catch (error) {
+      log("[event] failed to resolve fallback prompt context", { sessionID, error });
+    }
+
+    const promptInput = {
+      path: { id: sessionID },
+      body: {
+        ...(agent ? { agent } : {}),
+        ...(model ? { model } : {}),
+        ...(tools ? { tools } : {}),
+        parts: [createInternalAgentTextPart("continue")],
+      },
+      query: { directory: pluginContext.directory },
+    };
+
+    if (typeof pluginContext.client.session.promptAsync === "function") {
+      await pluginContext.client.session.promptAsync(promptInput).catch(() => {});
+      return;
+    }
+
+    await pluginContext.client.session.prompt(promptInput).catch(() => {});
+  };
 
   const dispatchToHooks = async (input: EventInput): Promise<void> => {
     await Promise.resolve(hooks.autoUpdateChecker?.event?.(input));
@@ -326,13 +421,7 @@ export function createEventHandler(args: {
                   lastHandledModelErrorMessageID.set(sessionID, assistantMessageID);
 
                   await pluginContext.client.session.abort({ path: { id: sessionID } }).catch(() => {});
-                  await pluginContext.client.session
-                    .prompt({
-                      path: { id: sessionID },
-                      body: { parts: [{ type: "text", text: "continue" }] },
-                      query: { directory: pluginContext.directory },
-                    })
-                    .catch(() => {});
+                  await retryWithInheritedContext(sessionID);
                 }
               }
             }
@@ -384,13 +473,7 @@ export function createEventHandler(args: {
                 !hooks.stopContinuationGuard?.isStopped(sessionID)
               ) {
                 await pluginContext.client.session.abort({ path: { id: sessionID } }).catch(() => {});
-                await pluginContext.client.session
-                  .prompt({
-                    path: { id: sessionID },
-                    body: { parts: [{ type: "text", text: "continue" }] },
-                    query: { directory: pluginContext.directory },
-                  })
-                  .catch(() => {});
+                await retryWithInheritedContext(sessionID);
               }
             }
           }
@@ -462,14 +545,7 @@ export function createEventHandler(args: {
               !hooks.stopContinuationGuard?.isStopped(sessionID)
             ) {
               await pluginContext.client.session.abort({ path: { id: sessionID } }).catch(() => {});
-
-              await pluginContext.client.session
-                .prompt({
-                  path: { id: sessionID },
-                  body: { parts: [{ type: "text", text: "continue" }] },
-                  query: { directory: pluginContext.directory },
-                })
-                .catch(() => {});
+              await retryWithInheritedContext(sessionID);
             }
           }
         }

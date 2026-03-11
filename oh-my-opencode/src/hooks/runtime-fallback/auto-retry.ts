@@ -1,6 +1,7 @@
 import type { HookDeps } from "./types"
 import { HOOK_NAME } from "./constants"
 import { log } from "../../shared/logger"
+import { createInternalAgentTextPart, resolveInheritedPromptTools } from "../../shared"
 import { normalizeAgentNameWithKnown, resolveAgentForSessionWithKnown } from "./agent-resolver"
 import { getSessionAgent } from "../../features/claude-code-session-state"
 import { getFallbackModelsForSession } from "./fallback-models"
@@ -117,36 +118,37 @@ export function createAutoRetryHelpers(deps: HookDeps) {
         }>
       }).data
       const lastUserMsg = msgs?.filter((m) => m.info?.role === "user").pop()
-      const lastUserPartsRaw =
-        lastUserMsg?.parts ??
-        (lastUserMsg?.info?.parts as Array<{ type?: string; text?: string }> | undefined)
+      const lastUserTools =
+        typeof lastUserMsg?.info?.tools === "object" && lastUserMsg.info.tools !== null
+          ? (lastUserMsg.info.tools as Record<string, boolean | "allow" | "deny" | "ask">)
+          : undefined
 
-      if (lastUserPartsRaw && lastUserPartsRaw.length > 0) {
+      if (lastUserMsg) {
         log(`[${HOOK_NAME}] Auto-retrying with fallback model (${source})`, {
           sessionID,
           model: newModel,
         })
 
-        const retryParts = lastUserPartsRaw
-          .filter((p) => p.type === "text" && typeof p.text === "string" && p.text.length > 0)
-          .map((p) => ({ type: "text" as const, text: p.text! }))
+        const retryAgent =
+          resolvedAgent ??
+          (typeof lastUserMsg.info?.agent === "string" ? lastUserMsg.info.agent : undefined) ??
+          getSessionAgent(sessionID)
+        const retryTools = resolveInheritedPromptTools(sessionID, lastUserTools)
 
-        if (retryParts.length > 0) {
-          const retryAgent = resolvedAgent ?? getSessionAgent(sessionID)
-          sessionAwaitingFallbackResult.add(sessionID)
-          scheduleSessionFallbackTimeout(sessionID, retryAgent)
+        sessionAwaitingFallbackResult.add(sessionID)
+        scheduleSessionFallbackTimeout(sessionID, retryAgent)
 
-          await ctx.client.session.promptAsync({
-            path: { id: sessionID },
-            body: {
-              ...(retryAgent ? { agent: retryAgent } : {}),
-              model: fallbackModelObj,
-              parts: retryParts,
-            },
-            query: { directory: ctx.directory },
-          })
-          retryDispatched = true
-        }
+        await ctx.client.session.promptAsync({
+          path: { id: sessionID },
+          body: {
+            ...(retryAgent ? { agent: retryAgent } : {}),
+            ...(retryTools ? { tools: retryTools } : {}),
+            model: fallbackModelObj,
+            parts: [createInternalAgentTextPart("continue")],
+          },
+          query: { directory: ctx.directory },
+        })
+        retryDispatched = true
       } else {
         log(`[${HOOK_NAME}] No user message found for auto-retry (${source})`, { sessionID })
       }

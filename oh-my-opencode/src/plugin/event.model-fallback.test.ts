@@ -6,21 +6,31 @@ import { _resetForTesting, setMainSession } from "../features/claude-code-sessio
 import { createModelFallbackHook, clearPendingModelFallback } from "../hooks/model-fallback/hook"
 
 describe("createEventHandler - model fallback", () => {
-  const createHandler = (args?: { hooks?: any }) => {
+  const createHandler = (args?: { hooks?: any; messages?: Array<Record<string, unknown>> }) => {
     const abortCalls: string[] = []
     const promptCalls: string[] = []
+    const promptBodies: Array<Record<string, unknown>> = []
 
     const handler = createEventHandler({
       ctx: {
         directory: "/tmp",
         client: {
           session: {
+            messages: async () => ({
+              data: args?.messages ?? [],
+            }),
             abort: async ({ path }: { path: { id: string } }) => {
               abortCalls.push(path.id)
               return {}
             },
-            prompt: async ({ path }: { path: { id: string } }) => {
+            prompt: async ({ path, body }: { path: { id: string }; body: Record<string, unknown> }) => {
               promptCalls.push(path.id)
+              promptBodies.push(body)
+              return {}
+            },
+            promptAsync: async ({ path, body }: { path: { id: string }; body: Record<string, unknown> }) => {
+              promptCalls.push(path.id)
+              promptBodies.push(body)
               return {}
             },
           },
@@ -43,7 +53,7 @@ describe("createEventHandler - model fallback", () => {
       hooks: args?.hooks ?? ({} as any),
     })
 
-    return { handler, abortCalls, promptCalls }
+    return { handler, abortCalls, promptCalls, promptBodies }
   }
 
   afterEach(() => {
@@ -121,6 +131,65 @@ describe("createEventHandler - model fallback", () => {
     //#then
     expect(abortCalls).toEqual([sessionID])
     expect(promptCalls).toEqual([sessionID])
+  })
+
+  test("inherits prior prompt context when handing off to a fallback model", async () => {
+    //#given
+    const sessionID = "ses_main_fallback_handoff"
+    setMainSession(sessionID)
+    clearPendingModelFallback(sessionID)
+    const modelFallback = createModelFallbackHook()
+    const { handler, abortCalls, promptCalls, promptBodies } = createHandler({
+      hooks: { modelFallback },
+      messages: [
+        {
+          info: {
+            id: "msg_user_handoff_1",
+            role: "user",
+            sessionID,
+            agent: "Hephaestus",
+            model: {
+              providerID: "openai",
+              modelID: "gpt-5.3-codex",
+            },
+            tools: {
+              question: false,
+              bash: true,
+            },
+          },
+        },
+      ],
+    })
+
+    //#when
+    await handler({
+      event: {
+        type: "session.error",
+        properties: {
+          sessionID,
+          providerID: "openai",
+          modelID: "gpt-5.3-codex",
+          error: {
+            name: "RateLimitError",
+            message: "gpt-5.3-codex overloaded",
+          },
+        },
+      },
+    })
+
+    //#then
+    expect(abortCalls).toEqual([sessionID])
+    expect(promptCalls).toEqual([sessionID])
+    expect(promptBodies).toHaveLength(1)
+    expect(promptBodies[0]?.agent).toBe("Hephaestus")
+    expect(promptBodies[0]?.model).toEqual({
+      providerID: "openai",
+      modelID: "gpt-5.3-codex",
+    })
+    expect(promptBodies[0]?.tools).toEqual({
+      question: false,
+      bash: true,
+    })
   })
 
   test("triggers retry prompt on session.status retry events and applies fallback", async () => {

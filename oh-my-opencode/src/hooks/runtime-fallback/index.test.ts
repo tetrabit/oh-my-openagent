@@ -2145,6 +2145,66 @@ describe("runtime-fallback", () => {
       expect(callBody?.agent).toBe("prometheus")
       expect(callBody?.model).toEqual({ providerID: "github-copilot", modelID: "claude-opus-4.6" })
     })
+
+    test("should hand off runtime fallback with inherited tools instead of replaying raw user text", async () => {
+      const promptCalls: Array<Record<string, unknown>> = []
+      const hook = createRuntimeFallbackHook(
+        createMockPluginInput({
+          session: {
+            messages: async () => ({
+              data: [
+                {
+                  info: {
+                    role: "user",
+                    agent: "prometheus",
+                    model: {
+                      providerID: "anthropic",
+                      modelID: "claude-opus-4-6",
+                    },
+                    tools: {
+                      question: false,
+                      bash: true,
+                    },
+                  },
+                  parts: [{ type: "text", text: "please continue the task" }],
+                },
+              ],
+            }),
+            promptAsync: async (args: unknown) => {
+              promptCalls.push(args as Record<string, unknown>)
+              return {}
+            },
+          },
+        }),
+        {
+          config: createMockConfig({ notify_on_fallback: false }),
+          pluginConfig: createMockPluginConfigWithAgentFallback("prometheus", ["github-copilot/claude-opus-4.6"]),
+        },
+      )
+      const sessionID = "test-runtime-fallback-handoff"
+
+      await hook.event({
+        event: {
+          type: "session.error",
+          properties: {
+            sessionID,
+            model: "anthropic/claude-opus-4-6",
+            error: { statusCode: 503, message: "Service unavailable" },
+            agent: "prometheus",
+          },
+        },
+      })
+
+      expect(promptCalls.length).toBe(1)
+      const callBody = promptCalls[0]?.body as Record<string, unknown>
+      expect(callBody?.agent).toBe("prometheus")
+      expect(callBody?.model).toEqual({ providerID: "github-copilot", modelID: "claude-opus-4.6" })
+      expect(callBody?.tools).toEqual({ question: false, bash: true })
+      const retryParts = callBody?.parts as Array<{ text?: string }> | undefined
+      expect(retryParts).toHaveLength(1)
+      expect(retryParts?.[0]?.text).toContain(sharedModule.OMO_INTERNAL_INITIATOR_MARKER)
+      expect(retryParts?.[0]?.text).not.toContain("please continue the task")
+    })
   })
 
   describe("cooldown mechanism", () => {
