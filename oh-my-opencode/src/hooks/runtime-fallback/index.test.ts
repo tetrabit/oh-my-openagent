@@ -2441,6 +2441,11 @@ describe("runtime-fallback", () => {
       const retryParts = callBody?.parts as Array<{ text?: string }> | undefined
       expect(retryParts).toHaveLength(1)
       expect(retryParts?.[0]?.text).toContain(sharedModule.OMO_INTERNAL_INITIATOR_MARKER)
+      const retryMetadata = (retryParts?.[0] as { metadata?: Record<string, unknown> } | undefined)?.metadata
+      const retryQueueControl = retryMetadata?.opencodePromptQueue as Record<string, unknown> | undefined
+      expect(retryQueueControl?.supersedePending).toBe("all")
+      expect(typeof retryQueueControl?.supersessionKey).toBe("string")
+      expect(typeof retryQueueControl?.attemptID).toBe("string")
       expect(retryParts?.[0]?.text).toContain("Resume the interrupted task in this existing session")
       expect(retryParts?.[0]?.text).toContain("Use the last real user prompt and any assistant output below as continuation anchors")
       expect(retryParts?.[0]?.text).toContain("Do not ask the user to restate the task")

@@ -1,7 +1,13 @@
 import type { HookDeps } from "./types"
 import { HOOK_NAME } from "./constants"
 import { log } from "../../shared/logger"
-import { createInternalAgentTextPart, resolveInheritedPromptTools } from "../../shared"
+import {
+  createInternalAgentTextPart,
+  createPromptAttemptID,
+  createSessionPromptSupersessionKey,
+  resolveInheritedPromptTools,
+  withPromptQueueControl,
+} from "../../shared"
 import { getAgentDisplayName } from "../../shared/agent-display-names"
 import { normalizeAgentNameWithKnown, resolveAgentForSessionWithKnown } from "./agent-resolver"
 import { getSessionAgent } from "../../features/claude-code-session-state"
@@ -145,7 +151,7 @@ export function createAutoRetryHelpers(deps: HookDeps) {
           await abortSessionRequest(sessionID, `${source}.preempt`)
         }
 
-        await ctx.client.session.promptAsync({
+        await ctx.client.session.promptAsync(withPromptQueueControl({
           path: { id: sessionID },
           body: {
             ...(retryAgent ? { agent: retryAgent } : {}),
@@ -154,7 +160,11 @@ export function createAutoRetryHelpers(deps: HookDeps) {
             parts: [createInternalAgentTextPart(createFallbackResumePrompt(source, newModel, msgs))],
           },
           query: { directory: ctx.directory },
-        })
+        }, {
+          supersessionKey: createSessionPromptSupersessionKey(sessionID, "runtime-fallback"),
+          attemptID: createPromptAttemptID(),
+          supersedePending: "all",
+        }))
         retryDispatched = true
       } else {
         log(`[${HOOK_NAME}] No user message found for auto-retry (${source})`, { sessionID })

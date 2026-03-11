@@ -1,5 +1,11 @@
 import type { FallbackEntry } from "./model-requirements"
 import { shouldRetryError } from "./model-error-classifier"
+import {
+  createPromptAttemptID,
+  createSessionPromptSupersessionKey,
+  withPromptQueueControl,
+  type PromptQueueSupersedePending,
+} from "./prompt-queue-control"
 import { transformModelForProvider } from "./provider-model-id-transform"
 
 type ExplicitModel = {
@@ -13,6 +19,7 @@ type PromptArgs = {
   body: Record<string, unknown> & {
     model?: { providerID: string; modelID: string }
     variant?: string
+    parts?: Array<Record<string, unknown>>
   }
 }
 
@@ -106,22 +113,41 @@ function getFallbackCandidates(fallbackChain: FallbackEntry[] | undefined): Expl
   return candidates
 }
 
+function withAttemptQueueControl(
+  promptArgs: PromptArgs,
+  supersessionKey: string,
+  supersedePending?: PromptQueueSupersedePending,
+): PromptArgs {
+  return withPromptQueueControl(promptArgs, {
+    supersessionKey,
+    attemptID: createPromptAttemptID(),
+    ...(supersedePending ? { supersedePending } : {}),
+  })
+}
+
 export async function sendPromptWithFallbackRetry(args: {
   promptArgs: PromptArgs
   currentModel?: ExplicitModel
   fallbackChain?: FallbackEntry[]
+  supersedePendingOnFallback?: PromptQueueSupersedePending
   sendPrompt: (promptArgs: PromptArgs) => Promise<void>
 }): Promise<ExplicitModel & { usedFallback: boolean }> {
+  const supersessionKey = createSessionPromptSupersessionKey(args.promptArgs.path.id, "fallback-retry")
+  const initialPromptArgs = withAttemptQueueControl(
+    args.promptArgs,
+    supersessionKey,
+  )
+
   try {
-    await args.sendPrompt(args.promptArgs)
+    await args.sendPrompt(initialPromptArgs)
     if (args.currentModel) {
       return { ...args.currentModel, usedFallback: false }
     }
-    const model = args.promptArgs.body.model
+    const model = initialPromptArgs.body.model
     return {
       providerID: model?.providerID ?? "",
       modelID: model?.modelID ?? "",
-      variant: args.promptArgs.body.variant,
+      variant: initialPromptArgs.body.variant,
       usedFallback: false,
     }
   } catch (error) {
@@ -143,7 +169,13 @@ export async function sendPromptWithFallbackRetry(args: {
       tried.add(candidateKey)
 
       try {
-        await args.sendPrompt(withExplicitModel(args.promptArgs, candidate))
+        await args.sendPrompt(
+          withAttemptQueueControl(
+            withExplicitModel(args.promptArgs, candidate),
+            supersessionKey,
+            args.supersedePendingOnFallback ?? "all",
+          ),
+        )
         return {
           ...candidate,
           usedFallback: true,
