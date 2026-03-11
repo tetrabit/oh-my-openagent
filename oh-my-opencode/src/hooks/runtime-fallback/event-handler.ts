@@ -312,7 +312,7 @@ export function createEventHandler(deps: HookDeps, helpers: AutoRetryHelpers) {
     }
 
     if (result.success && result.newModel) {
-      await helpers.autoRetryWithFallback(sessionID, result.newModel, resolvedAgent, "session.status")
+      await helpers.autoRetryWithFallback(sessionID, result.newModel, resolvedAgent, "session.status", true)
     }
 
     if (!result.success) {

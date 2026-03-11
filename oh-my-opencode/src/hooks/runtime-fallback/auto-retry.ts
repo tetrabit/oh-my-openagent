@@ -83,6 +83,7 @@ export function createAutoRetryHelpers(deps: HookDeps) {
     newModel: string,
     resolvedAgent: string | undefined,
     source: string,
+    preemptInFlightRequest = false,
   ): Promise<void> => {
     if (sessionRetryInFlight.has(sessionID)) {
       log(`[${HOOK_NAME}] Retry already in flight, skipping (${source})`, { sessionID })
@@ -137,6 +138,10 @@ export function createAutoRetryHelpers(deps: HookDeps) {
 
         sessionAwaitingFallbackResult.add(sessionID)
         scheduleSessionFallbackTimeout(sessionID, retryAgent)
+
+        if (preemptInFlightRequest) {
+          await abortSessionRequest(sessionID, `${source}.preempt`)
+        }
 
         await ctx.client.session.promptAsync({
           path: { id: sessionID },

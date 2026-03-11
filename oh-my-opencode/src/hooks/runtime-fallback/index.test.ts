@@ -2573,6 +2573,7 @@ describe("runtime-fallback", () => {
   describe("session.status retry handling", () => {
     test("should use configured runtime fallback models for session.status retry", async () => {
       const promptCalls: Array<{ body?: { agent?: string; model?: { providerID?: string; modelID?: string } } }> = []
+      const abortCalls: Array<{ path?: { id?: string } }> = []
 
       const hook = createRuntimeFallbackHook(
         createMockPluginInput({
@@ -2591,6 +2592,10 @@ describe("runtime-fallback", () => {
             }),
             promptAsync: async (args: unknown) => {
               promptCalls.push(args as { body?: { agent?: string; model?: { providerID?: string; modelID?: string } } })
+              return {}
+            },
+            abort: async (args: unknown) => {
+              abortCalls.push(args as { path?: { id?: string } })
               return {}
             },
           },
@@ -2631,6 +2636,7 @@ describe("runtime-fallback", () => {
       })
 
       expect(promptCalls).toHaveLength(1)
+      expect(abortCalls.some((call) => call.path?.id === sessionID)).toBe(true)
       expect(promptCalls[0]?.body?.agent).toBe("sisyphus")
       expect(promptCalls[0]?.body?.model).toEqual({
         providerID: "openai",
