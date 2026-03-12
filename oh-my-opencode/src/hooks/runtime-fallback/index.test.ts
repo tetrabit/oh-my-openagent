@@ -1605,6 +1605,116 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toContain("openai/gpt-5.3-codex")
     })
 
+    test("should refresh fallback timeout when persisted assistant tool progress is observed", async () => {
+      const retriedModels: string[] = []
+      let messagesData: Array<{
+        info?: Record<string, unknown>
+        parts?: Array<{ type?: string; text?: string }>
+      }> = [{ info: { role: "user" }, parts: [{ type: "text", text: "test" }] }]
+
+      const hook = createRuntimeFallbackHook(
+        createMockPluginInput({
+          session: {
+            messages: async () => ({ data: messagesData }),
+            promptAsync: async (args: unknown) => {
+              const model = (args as { body?: { model?: { providerID?: string; modelID?: string } } })?.body?.model
+              if (model?.providerID && model?.modelID) {
+                retriedModels.push(`${model.providerID}/${model.modelID}`)
+              }
+              return {}
+            },
+          },
+        }),
+        {
+          config: createMockConfig({ notify_on_fallback: false, timeout_seconds: 30 }),
+          pluginConfig: createMockPluginConfigWithCategoryFallback([
+            "github-copilot/claude-opus-4.6",
+            "openai/gpt-5.3-codex",
+          ]),
+          session_timeout_ms: 20,
+        }
+      )
+
+      const sessionID = "test-session-progress-refreshes-timeout"
+      SessionCategoryRegistry.register(sessionID, "test")
+
+      await hook.event({
+        event: {
+          type: "session.created",
+          properties: { info: { id: sessionID, model: "google/gemini-2.5-pro" } },
+        },
+      })
+
+      await hook.event({
+        event: {
+          type: "session.error",
+          properties: {
+            sessionID,
+            error: {
+              name: "ProviderAuthError",
+              data: {
+                providerID: "google",
+                message:
+                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+              },
+            },
+          },
+        },
+      })
+
+      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
+
+      messagesData = [
+        { info: { role: "user" }, parts: [{ type: "text", text: "test" }] },
+        { info: { role: "user" }, parts: [{ type: "text", text: "Internal runtime fallback handoff" }] },
+        {
+          info: { role: "assistant", model: "github-copilot/claude-opus-4.6" },
+          parts: [{ type: "step-start" }, { type: "tool" }, { type: "step-finish" }],
+        },
+      ]
+
+      await hook.event({
+        event: {
+          type: "message.updated",
+          properties: {
+            info: {
+              sessionID,
+              role: "assistant",
+              model: "github-copilot/claude-opus-4.6",
+            },
+          },
+        },
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 15))
+
+      await hook.event({
+        event: {
+          type: "message.updated",
+          properties: {
+            info: {
+              sessionID,
+              role: "assistant",
+              model: "github-copilot/claude-opus-4.6",
+            },
+          },
+        },
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 15))
+
+      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
+
+      await new Promise((resolve) => setTimeout(resolve, 20))
+
+      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6", "openai/gpt-5.3-codex"])
+
+      const progressLog = logCalls.find((c) =>
+        c.msg.includes("Assistant progress observed; refreshed fallback timeout")
+      )
+      expect(progressLog).toBeDefined()
+    })
+
     test("should not clear fallback timeout from info.message alone without persisted assistant text", async () => {
       const retriedModels: string[] = []
 

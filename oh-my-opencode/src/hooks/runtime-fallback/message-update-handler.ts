@@ -6,12 +6,64 @@ import { extractStatusCode, extractErrorName, classifyErrorType, isAbortLikeErro
 import { createFallbackState, prepareFallback } from "./fallback-state"
 import { getFallbackModelsForSession } from "./fallback-models"
 
-export function hasVisibleAssistantResponse(extractAutoRetrySignalFn: typeof extractAutoRetrySignal) {
+type AssistantPart = { type?: string; text?: string }
+
+type AssistantActivity = {
+  hasProgress: boolean
+  hasVisibleResponse: boolean
+}
+
+function inspectAssistantParts(
+  parts: AssistantPart[] | undefined,
+  extractAutoRetrySignalFn: typeof extractAutoRetrySignal,
+): AssistantActivity {
+  if (!parts || parts.length === 0) {
+    return {
+      hasProgress: false,
+      hasVisibleResponse: false,
+    }
+  }
+
+  let hasProgress = false
+  let hasVisibleResponse = false
+
+  for (const part of parts) {
+    const text = typeof part.text === "string" ? part.text.trim() : ""
+
+    if (part.type === "tool" || part.type === "step-start" || part.type === "step-finish") {
+      hasProgress = true
+      continue
+    }
+
+    if (part.type === "reasoning" && text.length > 0) {
+      hasProgress = true
+      continue
+    }
+
+    if (part.type === "text" && text.length > 0) {
+      const isRetrySignal = Boolean(extractAutoRetrySignalFn({ message: text }))
+      const hasErrorContent = containsErrorContent([{ type: "text", text }]).hasError
+
+      if (!isRetrySignal && !hasErrorContent) {
+        hasProgress = true
+        hasVisibleResponse = true
+      }
+    }
+  }
+
+  return {
+    hasProgress,
+    hasVisibleResponse,
+  }
+}
+
+export function inspectAssistantActivity(extractAutoRetrySignalFn: typeof extractAutoRetrySignal) {
   return async (
     ctx: HookDeps["ctx"],
     sessionID: string,
-    _info: Record<string, unknown> | undefined,
-  ): Promise<boolean> => {
+    info: Record<string, unknown> | undefined,
+    fallbackParts?: AssistantPart[],
+  ): Promise<AssistantActivity> => {
     try {
       const messagesResp = await ctx.client.session.messages({
         path: { id: sessionID },
@@ -25,34 +77,53 @@ export function hasVisibleAssistantResponse(extractAutoRetrySignalFn: typeof ext
         }>
       }).data
 
-      if (!msgs || msgs.length === 0) return false
+      if (!msgs || msgs.length === 0) {
+        return inspectAssistantParts(fallbackParts, extractAutoRetrySignalFn)
+      }
 
-      const lastAssistant = [...msgs].reverse().find((m) => m.info?.role === "assistant")
-      if (!lastAssistant) return false
-      if (lastAssistant.info?.error) return false
+      let lastUserIndex = -1
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i]?.info?.role === "user") {
+          lastUserIndex = i
+          break
+        }
+      }
+
+      let lastAssistant: {
+        info?: Record<string, unknown>
+        parts?: AssistantPart[]
+      } | undefined
+
+      for (let i = msgs.length - 1; i > lastUserIndex; i--) {
+        if (msgs[i]?.info?.role === "assistant") {
+          lastAssistant = msgs[i]
+          break
+        }
+      }
+
+      if (!lastAssistant) {
+        return inspectAssistantParts(fallbackParts, extractAutoRetrySignalFn)
+      }
+      if (lastAssistant.info?.error) {
+        return {
+          hasProgress: false,
+          hasVisibleResponse: false,
+        }
+      }
 
       const parts = lastAssistant.parts ??
-        (lastAssistant.info?.parts as Array<{ type?: string; text?: string }> | undefined)
+        (lastAssistant.info?.parts as AssistantPart[] | undefined)
 
-      const textFromParts = (parts ?? [])
-        .filter((p) => p.type === "text" && typeof p.text === "string")
-        .map((p) => p.text!.trim())
-        .filter((text) => text.length > 0)
-        .join("\n")
-
-      if (!textFromParts) return false
-      if (extractAutoRetrySignalFn({ message: textFromParts })) return false
-
-      return true
+      return inspectAssistantParts(parts, extractAutoRetrySignalFn)
     } catch {
-      return false
+      return inspectAssistantParts(fallbackParts, extractAutoRetrySignalFn)
     }
   }
 }
 
 export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHelpers) {
   const { ctx, config, pluginConfig, sessionStates, sessionLastAccess, sessionRetryInFlight, sessionAwaitingFallbackResult } = deps
-  const checkVisibleResponse = hasVisibleAssistantResponse(extractAutoRetrySignal)
+  const checkAssistantActivity = inspectAssistantActivity(extractAutoRetrySignal)
 
   return async (props: Record<string, unknown> | undefined) => {
     const info = props?.info as Record<string, unknown> | undefined
@@ -73,9 +144,19 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
         return
       }
 
-      const hasVisible = await checkVisibleResponse(ctx, sessionID, info)
-      if (!hasVisible) {
+      const activity = await checkAssistantActivity(ctx, sessionID, info, parts)
+      if (!activity.hasProgress) {
         log(`[${HOOK_NAME}] Assistant update observed without visible final response; keeping fallback timeout`, {
+          sessionID,
+          model,
+        })
+        return
+      }
+
+      if (!activity.hasVisibleResponse) {
+        const resolvedAgent = await helpers.resolveAgentForSessionFromContext(sessionID, info?.agent as string | undefined)
+        helpers.scheduleSessionFallbackTimeout(sessionID, resolvedAgent)
+        log(`[${HOOK_NAME}] Assistant progress observed; refreshed fallback timeout`, {
           sessionID,
           model,
         })
