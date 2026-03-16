@@ -3,20 +3,28 @@ import { appendSessionId, getPlanProgress, readBoulderState } from "../../featur
 import { log } from "../../shared/logger"
 import { isCallerOrchestrator } from "../../shared/session-utils"
 import { collectGitDiffStats, formatFileChanges } from "../../shared/git-worktree"
+import { shouldPauseForFinalWaveApproval } from "./final-wave-approval-gate"
 import { HOOK_NAME } from "./hook-name"
 import { DIRECT_WORK_REMINDER } from "./system-reminder-templates"
 import { isSisyphusPath } from "./sisyphus-path"
 import { extractSessionIdFromOutput } from "./subagent-session-id"
-import { buildCompletionGate, buildOrchestratorReminder, buildStandaloneVerificationReminder } from "./verification-reminders"
+import {
+  buildCompletionGate,
+  buildFinalWaveApprovalReminder,
+  buildOrchestratorReminder,
+  buildStandaloneVerificationReminder,
+} from "./verification-reminders"
 import { isWriteOrEditToolName } from "./write-edit-tool-policy"
+import type { SessionState } from "./types"
 import type { ToolExecuteAfterInput, ToolExecuteAfterOutput } from "./types"
 
 export function createToolExecuteAfterHandler(input: {
   ctx: PluginInput
   pendingFilePaths: Map<string, string>
   autoCommit: boolean
-  }): (toolInput: ToolExecuteAfterInput, toolOutput: ToolExecuteAfterOutput) => Promise<void> {
-  const { ctx, pendingFilePaths, autoCommit } = input
+  getState: (sessionID: string) => SessionState
+}): (toolInput: ToolExecuteAfterInput, toolOutput: ToolExecuteAfterOutput) => Promise<void> {
+  const { ctx, pendingFilePaths, autoCommit, getState } = input
   return async (toolInput, toolOutput): Promise<void> => {
     // Guard against undefined output (e.g., from /review command - see issue #1035)
     if (!toolOutput) {
@@ -64,6 +72,7 @@ export function createToolExecuteAfterHandler(input: {
       const boulderState = readBoulderState(ctx.directory)
       if (boulderState) {
         const progress = getPlanProgress(boulderState.active_plan)
+        const sessionState = toolInput.sessionID ? getState(toolInput.sessionID) : undefined
 
         if (toolInput.sessionID && !boulderState.session_ids?.includes(toolInput.sessionID)) {
           appendSessionId(ctx.directory, toolInput.sessionID)
@@ -75,10 +84,33 @@ export function createToolExecuteAfterHandler(input: {
 
         // Preserve original subagent response - critical for debugging failed tasks
         const originalResponse = toolOutput.output
+        const shouldPauseForApproval = sessionState
+          ? shouldPauseForFinalWaveApproval({
+              planPath: boulderState.active_plan,
+              taskOutput: originalResponse,
+              sessionState,
+            })
+          : false
+
+        if (sessionState) {
+          sessionState.waitingForFinalWaveApproval = shouldPauseForApproval
+
+          if (shouldPauseForApproval && sessionState.pendingRetryTimer) {
+            clearTimeout(sessionState.pendingRetryTimer)
+            sessionState.pendingRetryTimer = undefined
+          }
+        }
+
+        const leadReminder = shouldPauseForApproval
+          ? buildFinalWaveApprovalReminder(boulderState.plan_name, progress, subagentSessionId)
+          : buildCompletionGate(boulderState.plan_name, subagentSessionId)
+        const followupReminder = shouldPauseForApproval
+          ? null
+          : buildOrchestratorReminder(boulderState.plan_name, progress, subagentSessionId, autoCommit, false)
 
         toolOutput.output = `
 <system-reminder>
-${buildCompletionGate(boulderState.plan_name, subagentSessionId)}
+${leadReminder}
 </system-reminder>
 
 ## SUBAGENT WORK COMPLETED
@@ -91,13 +123,16 @@ ${fileChanges}
 
 ${originalResponse}
 
-<system-reminder>
-${buildOrchestratorReminder(boulderState.plan_name, progress, subagentSessionId, autoCommit, false)}
-</system-reminder>`
+${
+  followupReminder === null
+    ? ""
+    : `<system-reminder>\n${followupReminder}\n</system-reminder>`
+}`
         log(`[${HOOK_NAME}] Output transformed for orchestrator mode (boulder)`, {
           plan: boulderState.plan_name,
           progress: `${progress.completed}/${progress.total}`,
           fileCount: gitStats.length,
+          waitingForFinalWaveApproval: shouldPauseForApproval,
         })
       } else {
         toolOutput.output += `\n<system-reminder>\n${buildStandaloneVerificationReminder(subagentSessionId)}\n</system-reminder>`

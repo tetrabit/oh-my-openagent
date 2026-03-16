@@ -13,6 +13,7 @@ export interface TodoContinuationEnforcer {
   markRecovering: (sessionID: string) => void
   markRecoveryComplete: (sessionID: string) => void
   cancelAllCountdowns: () => void
+  dispose: () => void
 }
 
 export interface Todo {
@@ -34,6 +35,7 @@ export interface SessionState {
   inFlight?: boolean
   stagnationCount: number
   consecutiveFailures: number
+  recentCompactionAt?: number
 }
 
 export interface MessageInfo {
@@ -51,4 +53,9 @@ export interface ResolvedMessageInfo {
   agent?: string
   model?: { providerID: string; modelID: string }
   tools?: Record<string, ToolPermission>
+}
+
+export interface ResolveLatestMessageInfoResult {
+  resolvedInfo?: ResolvedMessageInfo
+  encounteredCompaction: boolean
 }
