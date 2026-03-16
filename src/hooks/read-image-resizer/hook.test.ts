@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 
-import { beforeEach, describe, expect, it, mock } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
 import type { PluginInput } from "@opencode-ai/plugin"
 
 import type { ImageDimensions, ResizeResult } from "./types"
@@ -12,21 +12,39 @@ const mockGetSessionModel = mock((_sessionID: string) => ({
   providerID: "anthropic",
   modelID: "claude-sonnet-4-6",
 } as { providerID: string; modelID: string } | undefined))
+let moduleImportCounter = 0
+let createReadImageResizerHook: typeof import("./hook").createReadImageResizerHook
 
-mock.module("./image-dimensions", () => ({
-  parseImageDimensions: mockParseImageDimensions,
-}))
+async function restoreActualReadImageResizerModules(): Promise<void> {
+  moduleImportCounter += 1
+  const imageDimensionsModule = await import(`./image-dimensions?restore=${moduleImportCounter}`)
+  const imageResizerModule = await import(`./image-resizer?restore=${moduleImportCounter}`)
+  const sessionModelStateModule = await import(`../../shared/session-model-state?restore=${moduleImportCounter}`)
 
-mock.module("./image-resizer", () => ({
-  calculateTargetDimensions: mockCalculateTargetDimensions,
-  resizeImage: mockResizeImage,
-}))
+  mock.restore()
+  mock.module("./image-dimensions", () => imageDimensionsModule)
+  mock.module("./image-resizer", () => imageResizerModule)
+  mock.module("../../shared/session-model-state", () => sessionModelStateModule)
+}
 
-mock.module("../../shared/session-model-state", () => ({
-  getSessionModel: mockGetSessionModel,
-}))
+async function prepareReadImageResizerHookModule(): Promise<void> {
+  mock.restore()
+  mock.module("./image-dimensions", () => ({
+    parseImageDimensions: mockParseImageDimensions,
+  }))
 
-import { createReadImageResizerHook } from "./hook"
+  mock.module("./image-resizer", () => ({
+    calculateTargetDimensions: mockCalculateTargetDimensions,
+    resizeImage: mockResizeImage,
+  }))
+
+  mock.module("../../shared/session-model-state", () => ({
+    getSessionModel: mockGetSessionModel,
+  }))
+
+  moduleImportCounter += 1
+  ;({ createReadImageResizerHook } = await import(`./hook?test=${moduleImportCounter}`))
+}
 
 type ToolOutput = {
   title: string
@@ -51,12 +69,17 @@ function createInput(tool: string): { tool: string; sessionID: string; callID: s
 }
 
 describe("createReadImageResizerHook", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await prepareReadImageResizerHookModule()
     mockParseImageDimensions.mockReset()
     mockCalculateTargetDimensions.mockReset()
     mockResizeImage.mockReset()
     mockGetSessionModel.mockReset()
     mockGetSessionModel.mockReturnValue({ providerID: "anthropic", modelID: "claude-sonnet-4-6" })
+  })
+
+  afterEach(async () => {
+    await restoreActualReadImageResizerModules()
   })
 
   it("skips non-Read tools", async () => {

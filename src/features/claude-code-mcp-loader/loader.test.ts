@@ -1,25 +1,32 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test"
 import { mkdirSync, writeFileSync, rmSync } from "fs"
 import { join } from "path"
-import { tmpdir } from "os"
-
+import { tmpdir, homedir as realHomedir } from "os"
 const TEST_DIR = join(tmpdir(), "mcp-loader-test-" + Date.now())
 const TEST_HOME = join(TEST_DIR, "home")
-
+// Capture the real home directory string ONCE before any mocking to avoid circular ref
+const REAL_HOME_DIR = realHomedir()
+// Mutable variable so mock factory stays fresh after test cleanup
+let activeHomedir: () => string = () => REAL_HOME_DIR
+let mockCounter = 0
 describe("getSystemMcpServerNames", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mkdirSync(TEST_DIR, { recursive: true })
     mkdirSync(TEST_HOME, { recursive: true })
+    activeHomedir = () => TEST_HOME
     mock.module("os", () => ({
-      homedir: () => TEST_HOME,
+      homedir: () => activeHomedir(),
       tmpdir,
     }))
+    const realShared = await import(`../../shared/index?test=${++mockCounter}`)
     mock.module("../../shared", () => ({
+      ...realShared,
       getClaudeConfigDir: () => join(TEST_HOME, ".claude"),
     }))
   })
 
   afterEach(() => {
+    activeHomedir = () => REAL_HOME_DIR
     mock.restore()
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
@@ -233,22 +240,28 @@ describe("getSystemMcpServerNames", () => {
 })
 
 describe("loadMcpConfigs", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mkdirSync(TEST_DIR, { recursive: true })
     mkdirSync(TEST_HOME, { recursive: true })
+    activeHomedir = () => TEST_HOME
     mock.module("os", () => ({
-      homedir: () => TEST_HOME,
+      homedir: () => activeHomedir(),
       tmpdir,
     }))
+    const realShared = await import(`../../shared/index?test=${++mockCounter}`)
     mock.module("../../shared", () => ({
+      ...realShared,
       getClaudeConfigDir: () => join(TEST_HOME, ".claude"),
     }))
+    const realLogger = await import(`../../shared/logger?test=${++mockCounter}`)
     mock.module("../../shared/logger", () => ({
+      ...realLogger,
       log: () => {},
     }))
   })
 
   afterEach(() => {
+    activeHomedir = () => REAL_HOME_DIR
     mock.restore()
     rmSync(TEST_DIR, { recursive: true, force: true })
   })

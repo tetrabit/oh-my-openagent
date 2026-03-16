@@ -1,9 +1,24 @@
 /// <reference types="bun-types" />
 
-import { describe, expect, spyOn, test } from "bun:test"
-import { _resetForTesting, updateSessionAgent } from "../../features/claude-code-session-state"
+import { afterEach, beforeEach, describe, expect, spyOn, test, mock } from "bun:test"
 import { getAgentDisplayName } from "../../shared/agent-display-names"
-import { createNoHephaestusNonGptHook } from "./index"
+
+let moduleImportCounter = 0
+let createNoHephaestusNonGptHook: typeof import("./index").createNoHephaestusNonGptHook
+let sessionState: typeof import("../../features/claude-code-session-state")
+let sharedModule: typeof import("../../shared")
+
+async function prepareNoHephaestusTestModules(): Promise<void> {
+  mock.restore()
+  moduleImportCounter += 1
+  sessionState = await import(`../../features/claude-code-session-state/index?test=${moduleImportCounter}`)
+  sharedModule = await import(`../../shared/index?test=${moduleImportCounter}`)
+
+  mock.module("../../features/claude-code-session-state", () => sessionState)
+  mock.module("../../shared", () => sharedModule)
+
+  ;({ createNoHephaestusNonGptHook } = await import(`./index?test=${moduleImportCounter}`))
+}
 
 const HEPHAESTUS_DISPLAY = getAgentDisplayName("hephaestus")
 const SISYPHUS_DISPLAY = getAgentDisplayName("sisyphus")
@@ -16,6 +31,16 @@ function createOutput() {
 }
 
 describe("no-hephaestus-non-gpt hook", () => {
+  beforeEach(async () => {
+    await prepareNoHephaestusTestModules()
+    sessionState._resetForTesting()
+  })
+
+  afterEach(() => {
+    sessionState._resetForTesting()
+    mock.restore()
+  })
+
   test("shows toast on every chat.message when hephaestus uses non-gpt model", async () => {
     // given - hephaestus with claude model
     const showToast = spyOn({ fn: async (_input: unknown) => ({}) }, "fn")
@@ -124,8 +149,8 @@ describe("no-hephaestus-non-gpt hook", () => {
 
   test("uses session agent fallback when input agent is missing", async () => {
     // given - session agent saved as hephaestus
-    _resetForTesting()
-    updateSessionAgent("ses_4", HEPHAESTUS_DISPLAY)
+    sessionState._resetForTesting()
+    sessionState.updateSessionAgent("ses_4", HEPHAESTUS_DISPLAY)
     const showToast = spyOn({ fn: async (_input: unknown) => ({}) }, "fn")
     const hook = createNoHephaestusNonGptHook({
       client: { tui: { showToast } },

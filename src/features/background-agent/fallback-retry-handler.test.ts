@@ -1,26 +1,60 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test"
-
-mock.module("../../shared", () => ({
-  log: mock(() => {}),
-  readConnectedProvidersCache: mock(() => null),
-  readProviderModelsCache: mock(() => null),
-}))
-
-mock.module("../../shared/model-error-classifier", () => ({
-  shouldRetryError: mock(() => true),
-  getNextFallback: mock((chain: Array<{ model: string }>, attempt: number) => chain[attempt]),
-  hasMoreFallbacks: mock((chain: Array<{ model: string }>, attempt: number) => attempt < chain.length),
-  selectFallbackProvider: mock((providers: string[]) => providers[0]),
-}))
-
-mock.module("../../shared/provider-model-id-transform", () => ({
-  transformModelForProvider: mock((_provider: string, model: string) => model),
-}))
-
-import { tryFallbackRetry } from "./fallback-retry-handler"
-import { shouldRetryError } from "../../shared/model-error-classifier"
+import { afterEach, beforeEach, describe, test, expect, mock } from "bun:test"
 import type { BackgroundTask } from "./types"
 import type { ConcurrencyManager } from "./concurrency"
+
+const logMock = mock(() => {})
+const readConnectedProvidersCacheMock = mock(() => null)
+const readProviderModelsCacheMock = mock(() => null)
+const shouldRetryErrorMock = mock(() => true)
+const selectFallbackProviderMock = mock((providers: string[]) => providers[0])
+const transformModelForProviderMock = mock((_provider: string, model: string) => model)
+let moduleImportCounter = 0
+let tryFallbackRetry: typeof import("./fallback-retry-handler").tryFallbackRetry
+
+async function restoreActualBackgroundAgentFallbackDependencies(): Promise<void> {
+  moduleImportCounter += 1
+  const sharedModule = await import(`../../shared/index?restore=${moduleImportCounter}`)
+  const modelErrorClassifierModule = await import(
+    `../../shared/model-error-classifier?restore=${moduleImportCounter}`
+  )
+  const providerModelTransformModule = await import(
+    `../../shared/provider-model-id-transform?restore=${moduleImportCounter}`
+  )
+
+  mock.restore()
+  mock.module("../../shared", () => sharedModule)
+  mock.module("../../shared/model-error-classifier", () => modelErrorClassifierModule)
+  mock.module("../../shared/provider-model-id-transform", () => providerModelTransformModule)
+}
+
+async function prepareFallbackRetryHandlerTestModule(): Promise<void> {
+  mock.restore()
+  const realShared = await import(`../../shared/index?test=${moduleImportCounter + 1}`)
+  mock.module("../../shared", () => ({
+    ...realShared,
+    log: logMock,
+    readConnectedProvidersCache: readConnectedProvidersCacheMock,
+    readProviderModelsCache: readProviderModelsCacheMock,
+  }))
+
+  const realModelErrorClassifier = await import(`../../shared/model-error-classifier?test=${moduleImportCounter + 1}`)
+  mock.module("../../shared/model-error-classifier", () => ({
+    ...realModelErrorClassifier,
+    shouldRetryError: shouldRetryErrorMock,
+    getNextFallback: mock((chain: Array<{ model: string }>, attempt: number) => chain[attempt]),
+    hasMoreFallbacks: mock((chain: Array<{ model: string }>, attempt: number) => attempt < chain.length),
+    selectFallbackProvider: selectFallbackProviderMock,
+  }))
+
+  const realProviderModelTransform = await import(`../../shared/provider-model-id-transform?test=${moduleImportCounter + 1}`)
+  mock.module("../../shared/provider-model-id-transform", () => ({
+    ...realProviderModelTransform,
+    transformModelForProvider: transformModelForProviderMock,
+  }))
+
+  moduleImportCounter += 1
+  ;({ tryFallbackRetry } = await import(`./fallback-retry-handler?test=${moduleImportCounter}`))
+}
 
 function createMockTask(overrides: Partial<BackgroundTask> = {}): BackgroundTask {
   return {
@@ -80,8 +114,13 @@ function createDefaultArgs(taskOverrides: Partial<BackgroundTask> = {}) {
 }
 
 describe("tryFallbackRetry", () => {
-  beforeEach(() => {
-    ;(shouldRetryError as any).mockImplementation(() => true)
+  beforeEach(async () => {
+    await prepareFallbackRetryHandlerTestModule()
+    shouldRetryErrorMock.mockImplementation(() => true)
+  })
+
+  afterEach(async () => {
+    await restoreActualBackgroundAgentFallbackDependencies()
   })
 
   describe("#given retryable error with fallback chain", () => {
@@ -188,7 +227,7 @@ describe("tryFallbackRetry", () => {
 
   describe("#given non-retryable error", () => {
     test("returns false when shouldRetryError returns false", () => {
-      ;(shouldRetryError as any).mockImplementation(() => false)
+      shouldRetryErrorMock.mockImplementation(() => false)
       const args = createDefaultArgs()
 
       const result = tryFallbackRetry(args)

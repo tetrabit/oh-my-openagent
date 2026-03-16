@@ -1,9 +1,29 @@
-import { describe, expect, it, beforeEach, afterEach, mock } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
 import { createHash, randomBytes } from "node:crypto"
-import { McpOAuthProvider, generateCodeVerifier, generateCodeChallenge, buildAuthorizationUrl } from "./provider"
 import type { OAuthTokenData } from "./storage"
 
+let moduleImportCounter = 0
+let McpOAuthProvider: typeof import("./provider").McpOAuthProvider
+let generateCodeVerifier: typeof import("./provider").generateCodeVerifier
+let generateCodeChallenge: typeof import("./provider").generateCodeChallenge
+let buildAuthorizationUrl: typeof import("./provider").buildAuthorizationUrl
+
+async function prepareProviderTestModule(): Promise<void> {
+  mock.restore()
+  moduleImportCounter += 1
+  ;({
+    McpOAuthProvider,
+    generateCodeVerifier,
+    generateCodeChallenge,
+    buildAuthorizationUrl,
+  } = await import(`./provider?test=${moduleImportCounter}`))
+}
+
 describe("McpOAuthProvider", () => {
+  beforeEach(async () => {
+    await prepareProviderTestModule()
+  })
+
   describe("generateCodeVerifier", () => {
     it("returns a base64url-encoded 32-byte random string", () => {
       // given
@@ -219,5 +239,9 @@ describe("McpOAuthProvider", () => {
       // then
       expect(url).toBe("http://127.0.0.1:19877/callback")
     })
+  })
+
+  afterEach(() => {
+    mock.restore()
   })
 })

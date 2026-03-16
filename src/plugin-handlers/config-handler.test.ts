@@ -97,6 +97,7 @@ afterEach(() => {
   ;(shared.log as any)?.mockRestore?.()
   ;(shared.fetchAvailableModels as any)?.mockRestore?.()
   ;(shared.readConnectedProvidersCache as any)?.mockRestore?.()
+  ;(shared.resolveModelPipeline as any)?.mockRestore?.()
   ;(configDir.getOpenCodeConfigPaths as any)?.mockRestore?.()
   ;(permissionCompat.migrateAgentConfig as any)?.mockRestore?.()
   ;(modelResolver.resolveModelWithFallback as any)?.mockRestore?.()

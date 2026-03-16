@@ -1,6 +1,41 @@
 declare const require: (name: string) => any
-const { describe, test, expect, beforeEach, afterEach } = require("bun:test")
+const { describe, test, expect, beforeEach, afterEach, mock } = require("bun:test")
 import { __setTimingConfig, __resetTimingConfig } from "./timing"
+
+let moduleImportCounter = 0
+let pollSyncSession: typeof import("./sync-session-poller").pollSyncSession
+let isSessionComplete: typeof import("./sync-session-poller").isSessionComplete
+
+function mockModuleVariants(
+  specifier: string,
+  filePath: string,
+  moduleValue: unknown,
+): void {
+  const factory = () => moduleValue
+  mock.module(specifier, factory)
+  mock.module(new URL(filePath, import.meta.url).href, factory)
+}
+
+async function prepareSyncSessionPollerModules(): Promise<void> {
+  mock.restore()
+  moduleImportCounter += 1
+  mockModuleVariants("../../shared", "../../shared/index.ts", {
+    normalizeSDKResponse: (result: unknown, fallback: unknown) => {
+      if (Array.isArray(result)) {
+        return result
+      }
+
+      if (result && typeof result === "object" && "data" in result) {
+        const data = (result as { data?: unknown }).data
+        return data === undefined ? fallback : data
+      }
+
+      return fallback
+    },
+  })
+
+  ;({ pollSyncSession, isSessionComplete } = await import(`./sync-session-poller?test=${moduleImportCounter}`))
+}
 
 function createMockCtx(aborted = false) {
   const controller = new AbortController()
@@ -14,7 +49,8 @@ function createMockCtx(aborted = false) {
 }
 
 describe("pollSyncSession", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await prepareSyncSessionPollerModules()
     __setTimingConfig({
       POLL_INTERVAL_MS: 10,
       MIN_STABILITY_TIME_MS: 0,
@@ -24,6 +60,7 @@ describe("pollSyncSession", () => {
   })
 
   afterEach(() => {
+    mock.restore()
     __resetTimingConfig()
   })
 
@@ -31,8 +68,6 @@ describe("pollSyncSession", () => {
     test("detects completion when assistant message has terminal finish reason", async () => {
       //#given - session messages with a terminal assistant finish ("end_turn")
       //         and the assistant id > user id (native opencode condition)
-      const { pollSyncSession } = require("./sync-session-poller")
-
       let pollCount = 0
       const mockClient = {
         session: {
@@ -63,8 +98,6 @@ describe("pollSyncSession", () => {
 
     test("keeps polling when assistant finish is tool-calls (non-terminal)", async () => {
       //#given - first poll returns tool-calls finish, second returns end_turn
-      const { pollSyncSession } = require("./sync-session-poller")
-
       let callCount = 0
       const mockClient = {
         session: {
@@ -115,8 +148,6 @@ describe("pollSyncSession", () => {
 
     test("keeps polling when finish is 'unknown' (non-terminal)", async () => {
       //#given
-      const { pollSyncSession } = require("./sync-session-poller")
-
       let callCount = 0
       const mockClient = {
         session: {
@@ -167,8 +198,6 @@ describe("pollSyncSession", () => {
 
     test("does not complete when assistant id < user id (user sent after assistant)", async () => {
       //#given - assistant finished but user message came after it (agent still processing)
-      const { pollSyncSession } = require("./sync-session-poller")
-
       let callCount = 0
       const mockClient = {
         session: {
@@ -222,7 +251,6 @@ describe("pollSyncSession", () => {
   describe("abort handling", () => {
     test("returns abort message when signal is aborted", async () => {
       //#given
-      const { pollSyncSession } = require("./sync-session-poller")
       let abortCount = 0
       const mockClient = {
         session: {
@@ -252,8 +280,6 @@ describe("pollSyncSession", () => {
   describe("timeout handling", () => {
     test("returns error string on timeout", async () => {
       //#given - never returns a terminal finish, but timeout is very short
-      const { pollSyncSession } = require("./sync-session-poller")
-
       __setTimingConfig({
         POLL_INTERVAL_MS: 10,
         MIN_STABILITY_TIME_MS: 0,
@@ -293,8 +319,6 @@ describe("pollSyncSession", () => {
    describe("non-idle session status", () => {
      test("skips message check when session is not idle", async () => {
        //#given
-       const { pollSyncSession } = require("./sync-session-poller")
-
        let statusCallCount = 0
        let messageCallCount = 0
        const mockClient = {
@@ -337,8 +361,6 @@ describe("pollSyncSession", () => {
 
   describe("isSessionComplete edge cases", () => {
     test("returns false when messages array is empty", () => {
-      const { isSessionComplete } = require("./sync-session-poller")
-
       //#given - empty messages array
       const messages: any[] = []
 
@@ -350,8 +372,6 @@ describe("pollSyncSession", () => {
     })
 
     test("returns false when no assistant message exists", () => {
-      const { isSessionComplete } = require("./sync-session-poller")
-
       //#given - only user messages, no assistant
       const messages = [
         { info: { id: "msg_001", role: "user", time: { created: 1000 } } },
@@ -366,8 +386,6 @@ describe("pollSyncSession", () => {
     })
 
     test("returns false when only assistant message exists (no user)", () => {
-      const { isSessionComplete } = require("./sync-session-poller")
-
       //#given - only assistant message, no user message
       const messages = [
         {
@@ -384,8 +402,6 @@ describe("pollSyncSession", () => {
     })
 
     test("returns false when assistant message has missing finish field", () => {
-      const { isSessionComplete } = require("./sync-session-poller")
-
       //#given - assistant message without finish field
       const messages = [
         { info: { id: "msg_001", role: "user", time: { created: 1000 } } },
@@ -403,8 +419,6 @@ describe("pollSyncSession", () => {
     })
 
     test("returns false when assistant message has missing info.id field", () => {
-      const { isSessionComplete } = require("./sync-session-poller")
-
       //#given - assistant message without id in info
       const messages = [
         { info: { id: "msg_001", role: "user", time: { created: 1000 } } },
@@ -422,8 +436,6 @@ describe("pollSyncSession", () => {
     })
 
     test("returns false when user message has missing info.id field", () => {
-      const { isSessionComplete } = require("./sync-session-poller")
-
       //#given - user message without id in info
       const messages = [
         { info: { role: "user", time: { created: 1000 } } },
@@ -438,7 +450,6 @@ describe("pollSyncSession", () => {
 
       //#then - should return false (missing user id)
       expect(result).toBe(false)
+    })
   })
-})
-
 })

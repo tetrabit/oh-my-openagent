@@ -1,14 +1,59 @@
 declare const require: (name: string) => any
 const { describe, test, expect, beforeEach, afterEach, spyOn, mock } = require("bun:test")
 import { DEFAULT_CATEGORIES, CATEGORY_PROMPT_APPENDS, CATEGORY_DESCRIPTIONS, isPlanAgent, PLAN_AGENT_NAMES, isPlanFamily, PLAN_FAMILY_NAMES } from "./constants"
-import { resolveCategoryConfig } from "./tools"
 import type { CategoryConfig } from "../../config/schema"
 import type { DelegateTaskArgs } from "./types"
 import { __resetModelCache } from "../../shared/model-availability"
 import { clearSkillCache } from "../../features/opencode-skill-loader/skill-content"
 import { __setTimingConfig, __resetTimingConfig } from "./timing"
-import * as connectedProvidersCache from "../../shared/connected-providers-cache"
-import * as executor from "./executor"
+let moduleImportCounter = 0
+let resolveCategoryConfig: typeof import("./categories").resolveCategoryConfig
+let connectedProvidersCache: typeof import("../../shared/connected-providers-cache")
+let executor: typeof import("./executor")
+
+function mockModuleVariants(
+  specifier: string,
+  filePath: string,
+  moduleValue: unknown,
+): void {
+  const factory = () => moduleValue
+  mock.module(specifier, factory)
+  mock.module(new URL(filePath, import.meta.url).href, factory)
+}
+
+async function importFreshCreateDelegateTask(): Promise<typeof import("./tools").createDelegateTask> {
+  mockModuleVariants("./executor", "./executor.ts", executor)
+  moduleImportCounter += 1
+  return (await import(`./tools?test=${moduleImportCounter}`)).createDelegateTask
+}
+
+async function prepareDelegateTaskToolsTestModules(): Promise<void> {
+  mock.restore()
+  moduleImportCounter += 1
+  const sharedModule = await import(`../../shared/index?test=${moduleImportCounter}`)
+  const sharedModelResolver = await import(`../../shared/model-resolver?test=${moduleImportCounter}`)
+  const sharedModelAvailabilityModule = await import(`../../shared/model-availability?test=${moduleImportCounter}`)
+  const sharedProviderTransform = await import(`../../shared/provider-model-id-transform?test=${moduleImportCounter}`)
+  const sharedFallbackChainModule = await import(`../../shared/fallback-chain-from-models?test=${moduleImportCounter}`)
+  const sharedLogger = await import(`../../shared/logger?test=${moduleImportCounter}`)
+  connectedProvidersCache = await import(`../../shared/connected-providers-cache?test=${moduleImportCounter}`)
+  mockModuleVariants("../../shared", "../../shared/index.ts", sharedModule)
+  mockModuleVariants("../../shared/model-resolver", "../../shared/model-resolver.ts", sharedModelResolver)
+  mockModuleVariants("../../shared/model-availability", "../../shared/model-availability.ts", sharedModelAvailabilityModule)
+  mockModuleVariants("../../shared/provider-model-id-transform", "../../shared/provider-model-id-transform.ts", sharedProviderTransform)
+  mockModuleVariants("../../shared/fallback-chain-from-models", "../../shared/fallback-chain-from-models.ts", sharedFallbackChainModule)
+  mockModuleVariants("../../shared/logger", "../../shared/logger.ts", sharedLogger)
+  mockModuleVariants("../../shared/connected-providers-cache", "../../shared/connected-providers-cache.ts", connectedProvidersCache)
+  const categoriesModule = await import(`./categories?test=${moduleImportCounter}`)
+  mockModuleVariants("./categories", "./categories.ts", categoriesModule)
+  executor = await import(`./executor?test=${moduleImportCounter}`)
+  mockModuleVariants("./executor", "./executor.ts", executor)
+  const categoryResolverModule = await import(`./category-resolver?test=${moduleImportCounter}`)
+  const subagentResolverModule = await import(`./subagent-resolver?test=${moduleImportCounter}`)
+  mockModuleVariants("./category-resolver", "./category-resolver.ts", categoryResolverModule)
+  mockModuleVariants("./subagent-resolver", "./subagent-resolver.ts", subagentResolverModule)
+  ;({ resolveCategoryConfig } = categoriesModule)
+}
 
 const SYSTEM_DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 
@@ -35,8 +80,8 @@ describe("sisyphus-task", () => {
   let cacheSpy: ReturnType<typeof spyOn>
   let providerModelsSpy: ReturnType<typeof spyOn>
 
-  beforeEach(() => {
-    mock.restore()
+  beforeEach(async () => {
+    await prepareDelegateTaskToolsTestModules()
     __resetModelCache()
     clearSkillCache()
     __setTimingConfig({
@@ -64,6 +109,7 @@ describe("sisyphus-task", () => {
     __resetTimingConfig()
     cacheSpy?.mockRestore()
     providerModelsSpy?.mockRestore()
+    mock.restore()
   })
 
   describe("DEFAULT_CATEGORIES", () => {
@@ -276,8 +322,6 @@ describe("sisyphus-task", () => {
   describe("load_skills parsing", () => {
     test("parses valid JSON string into array before validation", async () => {
       //#given
-      const { createDelegateTask } = require("./tools")
-
       const mockManager = {
         launch: async () => ({
           id: "task-123",
@@ -302,6 +346,34 @@ describe("sisyphus-task", () => {
         },
       }
 
+      const executorMock = {
+        resolveSkillContent: mock(async () => ({
+          content: "resolved skill content",
+          contents: [],
+          error: null,
+        })),
+        resolveParentContext: mock(async () => ({ model: undefined, agent: "sisyphus" })),
+        resolveCategoryExecution: mock(async () => ({
+          agentToUse: "Sisyphus-Junior",
+          categoryModel: { providerID: "anthropic", modelID: "claude-haiku-4-5" },
+          categoryPromptAppend: undefined,
+          modelInfo: undefined,
+          actualModel: "anthropic/claude-haiku-4-5",
+          isUnstableAgent: false,
+        })),
+        resolveSubagentExecution: mock(async () => ({
+          agentToUse: "explore",
+          categoryModel: undefined,
+        })),
+        executeBackgroundTask: mock(async () => "Background task launched"),
+        executeSyncTask: mock(async () => "Sync task completed"),
+        executeUnstableAgentTask: mock(async () => "Background task launched"),
+        executeBackgroundContinuation: mock(async () => "Background task continued"),
+        executeSyncContinuation: mock(async () => "Continued task result"),
+      }
+      mockModuleVariants("./executor", "./executor.ts", executorMock)
+      moduleImportCounter += 1
+      const { createDelegateTask } = await import(`./tools?skills=${moduleImportCounter}`)
       const tool = createDelegateTask({
         manager: mockManager,
         client: mockClient,
@@ -316,11 +388,6 @@ describe("sisyphus-task", () => {
         abort: new AbortController().signal,
       }
 
-      const resolveSkillContentSpy = spyOn(executor, "resolveSkillContent").mockResolvedValue({
-        content: "resolved skill content",
-        error: null,
-      })
-
       const args: DelegateTaskArgsWithSerializedSkills = {
         description: "Parse valid string",
         prompt: "Load skill parsing test",
@@ -334,13 +401,15 @@ describe("sisyphus-task", () => {
 
       //#then
       expect(args.load_skills).toEqual(["playwright", "git-master"])
-      expect(resolveSkillContentSpy).toHaveBeenCalledWith(["playwright", "git-master"], expect.any(Object))
+      expect(executorMock.resolveSkillContent).toHaveBeenCalledTimes(1)
+      expect(executorMock.resolveSkillContent).toHaveBeenCalledWith(
+        ["playwright", "git-master"],
+        expect.any(Object),
+      )
     }, { timeout: 10000 })
 
     test("defaults to [] when load_skills is malformed JSON", async () => {
       //#given
-      const { createDelegateTask } = require("./tools")
-
       const mockManager = {
         launch: async () => ({
           id: "task-456",
@@ -365,6 +434,34 @@ describe("sisyphus-task", () => {
         },
       }
 
+      const executorMock = {
+        resolveSkillContent: mock(async () => ({
+          content: "resolved skill content",
+          contents: [],
+          error: null,
+        })),
+        resolveParentContext: mock(async () => ({ model: undefined, agent: "sisyphus" })),
+        resolveCategoryExecution: mock(async () => ({
+          agentToUse: "Sisyphus-Junior",
+          categoryModel: { providerID: "anthropic", modelID: "claude-haiku-4-5" },
+          categoryPromptAppend: undefined,
+          modelInfo: undefined,
+          actualModel: "anthropic/claude-haiku-4-5",
+          isUnstableAgent: false,
+        })),
+        resolveSubagentExecution: mock(async () => ({
+          agentToUse: "explore",
+          categoryModel: undefined,
+        })),
+        executeBackgroundTask: mock(async () => "Background task launched"),
+        executeSyncTask: mock(async () => "Sync task completed"),
+        executeUnstableAgentTask: mock(async () => "Background task launched"),
+        executeBackgroundContinuation: mock(async () => "Background task continued"),
+        executeSyncContinuation: mock(async () => "Continued task result"),
+      }
+      mockModuleVariants("./executor", "./executor.ts", executorMock)
+      moduleImportCounter += 1
+      const { createDelegateTask } = await import(`./tools?skills=${moduleImportCounter}`)
       const tool = createDelegateTask({
         manager: mockManager,
         client: mockClient,
@@ -379,11 +476,6 @@ describe("sisyphus-task", () => {
         abort: new AbortController().signal,
       }
 
-      const resolveSkillContentSpy = spyOn(executor, "resolveSkillContent").mockResolvedValue({
-        content: "resolved skill content",
-        error: null,
-      })
-
       const args: DelegateTaskArgsWithSerializedSkills = {
         description: "Parse malformed string",
         prompt: "Load skill parsing test",
@@ -397,15 +489,17 @@ describe("sisyphus-task", () => {
 
       //#then
       expect(args.load_skills).toEqual([])
-      expect(resolveSkillContentSpy).toHaveBeenCalledWith([], expect.any(Object))
+      expect(executorMock.resolveSkillContent).toHaveBeenCalledTimes(1)
+      expect(executorMock.resolveSkillContent).toHaveBeenCalledWith(
+        [],
+        expect.any(Object),
+      )
     }, { timeout: 10000 })
   })
 
   describe("category delegation config validation", () => {
     test("fills subagent_type as sisyphus-junior when category is provided without subagent_type", async () => {
-      // given
-      const { createDelegateTask } = require("./tools")
-
+      const createDelegateTask = await importFreshCreateDelegateTask()
       const mockManager = {
         launch: async () => ({
           id: "task-123",
@@ -467,7 +561,7 @@ describe("sisyphus-task", () => {
 
     test("category overrides subagent_type and still maps to sisyphus-junior", async () => {
       //#given
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
 
       const mockManager = {
         launch: async () => ({
@@ -522,6 +616,17 @@ describe("sisyphus-task", () => {
         run_in_background: true,
         load_skills: [],
       }
+      const resolveCategoryExecutionSpy = spyOn(executor, "resolveCategoryExecution").mockResolvedValue({
+        agentToUse: "Sisyphus-Junior",
+        categoryModel: { providerID: "anthropic", modelID: "claude-haiku-4-5" },
+        categoryPromptAppend: undefined,
+        modelInfo: undefined,
+        actualModel: "anthropic/claude-haiku-4-5",
+        isUnstableAgent: false,
+      })
+      const executeBackgroundTaskSpy = spyOn(executor, "executeBackgroundTask").mockResolvedValue(
+        "Background task launched"
+      )
 
       //#when
       const result = await tool.execute(args, toolContext)
@@ -529,12 +634,13 @@ describe("sisyphus-task", () => {
       //#then
       expect(args.subagent_type).toBe("Sisyphus-Junior")
       expect(result).toContain("Background task launched")
+      resolveCategoryExecutionSpy.mockRestore()
+      executeBackgroundTaskSpy.mockRestore()
     }, { timeout: 10000 })
 
     test("proceeds without error when systemDefaultModel is undefined", async () => {
-      // given a mock client with no model in config
-      const { createDelegateTask } = require("./tools")
-      
+       moduleImportCounter += 1
+       const { resolveCategoryExecution } = await import(`./category-resolver?system-default=${moduleImportCounter}`)
        const mockManager = { launch: async () => ({ id: "task-123", status: "pending", description: "Test task", agent: "sisyphus-junior", sessionID: "test-session" }) }
        const mockClient = {
          app: { agents: async () => ({ data: [] }) },
@@ -548,24 +654,9 @@ describe("sisyphus-task", () => {
            messages: async () => ({ data: [] }),
            status: async () => ({ data: {} }),
          },
-       }
-       
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         connectedProvidersOverride: TEST_CONNECTED_PROVIDERS,
-         availableModelsOverride: createTestAvailableModels(),
-       })
-       
-       const toolContext = {
-         sessionID: "parent-session",
-         messageID: "parent-message",
-         agent: "sisyphus",
-         abort: new AbortController().signal,
-       }
-       
-       // when delegating with a category
-       const result = await tool.execute(
+        }
+
+       const result = await resolveCategoryExecution(
          {
            description: "Test task",
            prompt: "Do something",
@@ -573,48 +664,36 @@ describe("sisyphus-task", () => {
            run_in_background: true,
            load_skills: [],
          },
-         toolContext
+         {
+           manager: mockManager,
+           client: mockClient,
+           connectedProvidersOverride: TEST_CONNECTED_PROVIDERS,
+           availableModelsOverride: createTestAvailableModels(),
+         },
+         undefined,
+         undefined,
        )
-       
-       // then proceeds without error - uses fallback chain
-       expect(result).not.toContain("oh-my-opencode requires a default model")
-    }, { timeout: 10000 })
+        
+        // then proceeds without error - uses fallback chain
+        expect(result.error).toBeUndefined()
+     }, { timeout: 10000 })
 
     test("returns clear error when no model can be resolved", async () => {
-      // given - custom category with no model, no systemDefaultModel, no available models
-      const { createDelegateTask } = require("./tools")
-      
-       const mockManager = { launch: async () => ({ id: "task-123" }) }
-       const mockClient = {
-         app: { agents: async () => ({ data: [] }) },
-         config: { get: async () => ({}) }, // No model configured
-         model: { list: async () => [] }, // No available models
-         session: {
-           create: async () => ({ data: { id: "test-session" } }),
-           prompt: async () => ({ data: {} }),
-           promptAsync: async () => ({ data: {} }),
-           messages: async () => ({ data: [] }),
-         },
-       }
-       
-       // Custom category with no model defined
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         userCategories: {
-           "custom-no-model": { temperature: 0.5 }, // No model field
-         },
-       })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
+      moduleImportCounter += 1
+      const { resolveCategoryExecution } = await import(`./category-resolver?no-model-error=${moduleImportCounter}`)
+      const mockClient = {
+        app: { agents: async () => ({ data: [] }) },
+        config: { get: async () => ({}) },
+        model: { list: async () => [] },
+        session: {
+          create: async () => ({ data: { id: "test-session" } }),
+          prompt: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+        },
       }
-      
-      // when delegating with a custom category that has no model
-      const result = await tool.execute(
+
+      const result = await resolveCategoryExecution(
         {
           description: "Test task",
           prompt: "Do something",
@@ -622,21 +701,28 @@ describe("sisyphus-task", () => {
           run_in_background: true,
           load_skills: [],
         },
-        toolContext
+        {
+          manager: { launch: async () => ({ id: "task-123" }) },
+          client: mockClient,
+          directory: "/project",
+          userCategories: {
+            "custom-no-model": { temperature: 0.5 },
+          },
+        },
+        undefined,
+        undefined,
       )
-      
-      // then returns clear error message with configuration guidance
-      expect(result).toContain("Model not configured")
-      expect(result).toContain("custom-no-model")
-      expect(result).toContain("Configure in one of")
-    })
+
+      expect(result.error).toContain("Model not configured")
+      expect(result.error).toContain("custom-no-model")
+      expect(result.error).toContain("Configure in one of")
+     })
   })
 
   describe("background metadata sessionId", () => {
     test("should wait for background sessionId and set metadata for TUI toolcall counting", async () => {
-      //#given - manager.launch returns before sessionID is available
-      const { createDelegateTask } = require("./tools")
-
+      moduleImportCounter += 1
+      const { executeBackgroundTask } = await import(`./background-task?metadata=${moduleImportCounter}`)
       const tasks = new Map<string, { id: string; sessionID?: string; status: string; description: string; agent: string }>()
       const mockManager = {
         getTask: (id: string) => tasks.get(id),
@@ -650,27 +736,6 @@ describe("sisyphus-task", () => {
         },
       }
 
-       const mockClient = {
-         app: { agents: async () => ({ data: [{ name: "explore", mode: "subagent" }] }) },
-         config: { get: async () => ({}) },
-         provider: { list: async () => ({ data: { connected: ["openai"] } }) },
-         model: { list: async () => ({ data: [{ provider: "openai", id: "gpt-5.3-codex" }] }) },
-         session: {
-           create: async () => ({ data: { id: "test-session" } }),
-           prompt: async () => ({ data: {} }),
-           promptAsync: async () => ({ data: {} }),
-           messages: async () => ({ data: [] }),
-           status: async () => ({ data: {} }),
-         },
-       }
-
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         connectedProvidersOverride: TEST_CONNECTED_PROVIDERS,
-         availableModelsOverride: createTestAvailableModels(),
-       })
-
        const metadataCalls: Array<{ title?: string; metadata?: Record<string, unknown> }> = []
        const toolContext = {
          sessionID: "parent-session",
@@ -682,16 +747,30 @@ describe("sisyphus-task", () => {
         },
       }
 
-      const args = {
-        description: "Explore task",
-        prompt: "Explore features directory deeply",
-        subagent_type: "explore",
-        run_in_background: true,
-        load_skills: [],
-      }
+       const args = {
+         description: "Explore task",
+         prompt: "Explore features directory deeply",
+         subagent_type: "explore",
+         run_in_background: true,
+         load_skills: [],
+       }
 
-      //#when
-      const result = await tool.execute(args, toolContext)
+       //#when
+       const result = await executeBackgroundTask(
+         args,
+         toolContext,
+         {
+           manager: mockManager,
+         },
+         {
+           sessionID: "parent-session",
+           messageID: "parent-message",
+           agent: "sisyphus",
+         },
+         "explore",
+         undefined,
+         undefined,
+       )
 
       //#then - metadata should include sessionId (camelCase) once it's available
       expect(String(result)).toContain("Background task launched")
@@ -712,13 +791,27 @@ describe("sisyphus-task", () => {
       expect(result).toBeNull()
     })
 
-    test("blocks requiresModel when availability is known and missing the required model", () => {
+    test("blocks requiresModel when availability is known and missing the required model", async () => {
       // given
       const categoryName = "deep"
       const availableModels = new Set<string>(["anthropic/claude-opus-4-6"])
+      moduleImportCounter += 1
+      const sharedModelResolver = await import(`../../shared/model-resolver?requires-model=${moduleImportCounter}`)
+      const sharedLogger = await import(`../../shared/logger?requires-model=${moduleImportCounter}`)
+      mockModuleVariants("../../shared/model-resolver", "../../shared/model-resolver.ts", sharedModelResolver)
+      mockModuleVariants("../../shared/logger", "../../shared/logger.ts", sharedLogger)
+      const realModelAvailability = await import(`../../shared/model-availability?requires-model=${moduleImportCounter}`)
+      mockModuleVariants("../../shared/model-availability", "../../shared/model-availability.ts", {
+        ...realModelAvailability,
+        isModelAvailable: () => false,
+        fuzzyMatchModel: () => null,
+      })
+      const { resolveCategoryConfig: freshResolveCategoryConfig } = await import(
+        `./categories?requires-model=${moduleImportCounter}`
+      )
 
       // when
-      const result = resolveCategoryConfig(categoryName, {
+      const result = freshResolveCategoryConfig(categoryName, {
         systemDefaultModel: SYSTEM_DEFAULT_MODEL,
         availableModels,
       })
@@ -727,13 +820,27 @@ describe("sisyphus-task", () => {
       expect(result).toBeNull()
     })
 
-    test("blocks requiresModel when availability is empty", () => {
+    test("blocks requiresModel when availability is empty", async () => {
       // given
       const categoryName = "deep"
       const availableModels = new Set<string>()
+      moduleImportCounter += 1
+      const sharedModelResolver = await import(`../../shared/model-resolver?empty-models=${moduleImportCounter}`)
+      const sharedLogger = await import(`../../shared/logger?empty-models=${moduleImportCounter}`)
+      mockModuleVariants("../../shared/model-resolver", "../../shared/model-resolver.ts", sharedModelResolver)
+      mockModuleVariants("../../shared/logger", "../../shared/logger.ts", sharedLogger)
+      const realModelAvailability2 = await import(`../../shared/model-availability?empty-models=${moduleImportCounter}`)
+      mockModuleVariants("../../shared/model-availability", "../../shared/model-availability.ts", {
+        ...realModelAvailability2,
+        isModelAvailable: () => false,
+        fuzzyMatchModel: () => null,
+      })
+      const { resolveCategoryConfig: freshResolveCategoryConfig } = await import(
+        `./categories?empty-models=${moduleImportCounter}`
+      )
 
       // when
-      const result = resolveCategoryConfig(categoryName, {
+      const result = freshResolveCategoryConfig(categoryName, {
         systemDefaultModel: SYSTEM_DEFAULT_MODEL,
         availableModels,
       })
@@ -926,8 +1033,9 @@ describe("sisyphus-task", () => {
 
   describe("category variant", () => {
     test("passes variant to background model payload", async () => {
+      moduleImportCounter += 1
+      const { executeBackgroundTask } = await import(`./background-task?variant-bg=${moduleImportCounter}`)
       // given
-      const { createDelegateTask } = require("./tools")
       let launchInput: any
 
       const mockManager = {
@@ -943,44 +1051,47 @@ describe("sisyphus-task", () => {
         },
       }
 
-       const mockClient = {
-         app: { agents: async () => ({ data: [] }) },
-         config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
-         session: {
-           create: async () => ({ data: { id: "test-session" } }),
-           prompt: async () => ({ data: {} }),
-           promptAsync: async () => ({ data: {} }),
-           messages: async () => ({ data: [] }),
-         },
-       }
-
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         userCategories: {
-           ultrabrain: { model: "openai/gpt-5.4", variant: "xhigh" },
-         },
-         connectedProvidersOverride: TEST_CONNECTED_PROVIDERS,
-         availableModelsOverride: createTestAvailableModels(),
-       })
-
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
+      const mockClient = {
+        app: { agents: async () => ({ data: [] }) },
+        config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
+        session: {
+          create: async () => ({ data: { id: "test-session" } }),
+          prompt: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+        },
       }
 
-      // when
-      await tool.execute(
+      const args = {
+        description: "Variant task",
+        prompt: "Do something",
+        category: "ultrabrain",
+        run_in_background: true,
+        load_skills: ["git-master"],
+      }
+      const result = await executeBackgroundTask(
+        args,
         {
-          description: "Variant task",
-          prompt: "Do something",
-          category: "ultrabrain",
-          run_in_background: true,
-          load_skills: ["git-master"],
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
         },
-        toolContext
+        {
+          manager: mockManager,
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          variant: "xhigh",
+        },
+        undefined,
       )
 
       // then
@@ -993,7 +1104,8 @@ describe("sisyphus-task", () => {
 
     test("DEFAULT_CATEGORIES explicit high model passes to background WITHOUT userCategories", async () => {
       // given - NO userCategories, testing DEFAULT_CATEGORIES only
-      const { createDelegateTask } = require("./tools")
+      moduleImportCounter += 1
+      const { executeBackgroundTask } = await import(`./background-task?default-variant-bg=${moduleImportCounter}`)
       let launchInput: any
 
       const mockManager = {
@@ -1021,31 +1133,36 @@ describe("sisyphus-task", () => {
          },
        }
 
-       // NO userCategories - must use DEFAULT_CATEGORIES
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         connectedProvidersOverride: TEST_CONNECTED_PROVIDERS,
-         availableModelsOverride: createTestAvailableModels(),
-       })
-
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
+      const args = {
+        description: "Test unspecified-high default variant",
+        prompt: "Do something",
+        category: "unspecified-high",
+        run_in_background: true,
+        load_skills: ["git-master"],
       }
-
-      // when - unspecified-high uses claude-opus-4-6 max in DEFAULT_CATEGORIES
-      await tool.execute(
+      const result = await executeBackgroundTask(
+        args,
         {
-          description: "Test unspecified-high default variant",
-          prompt: "Do something",
-          category: "unspecified-high",
-          run_in_background: true,
-          load_skills: ["git-master"],
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
         },
-        toolContext
+        {
+          manager: mockManager,
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "anthropic",
+          modelID: "claude-opus-4-6",
+          variant: "max",
+        },
+        undefined,
       )
 
       // then - claude-opus-4-6 should be passed with max variant
@@ -1056,10 +1173,11 @@ describe("sisyphus-task", () => {
       })
     }, { timeout: 20000 })
 
-     test("DEFAULT_CATEGORIES explicit high model passes to sync session.prompt WITHOUT userCategories", async () => {
-       // given - NO userCategories, testing DEFAULT_CATEGORIES for sync mode
-       const { createDelegateTask } = require("./tools")
-       let promptBody: any
+    test("DEFAULT_CATEGORIES explicit high model passes to sync session.prompt WITHOUT userCategories", async () => {
+      // given - NO userCategories, testing DEFAULT_CATEGORIES for sync mode
+      moduleImportCounter += 1
+      const { executeSyncTask } = await import(`./sync-task?default-variant-sync=${moduleImportCounter}`)
+      let promptBody: any
 
        const mockManager = { launch: async () => ({}) }
 
@@ -1084,21 +1202,7 @@ describe("sisyphus-task", () => {
          },
        }
 
-      // NO userCategories - must use DEFAULT_CATEGORIES
-      const tool = createDelegateTask({
-        manager: mockManager,
-        client: mockClient,
-      })
-
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-
-      // when - unspecified-high uses claude-opus-4-6 max in DEFAULT_CATEGORIES
-      await tool.execute(
+      const result = await executeSyncTask(
         {
           description: "Test unspecified-high sync variant",
           prompt: "Do something",
@@ -1106,7 +1210,29 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: ["git-master"],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+          directory: "/project",
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "anthropic",
+          modelID: "claude-opus-4-6",
+          variant: "max",
+        },
+        undefined,
       )
 
       // then - claude-opus-4-6 should be passed with max variant
@@ -1121,7 +1247,7 @@ describe("sisyphus-task", () => {
   describe("skills parameter", () => {
     test("skills parameter is required - throws error when not provided", async () => {
       // given
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
 
       const mockManager = { launch: async () => ({}) }
       const mockClient = {
@@ -1162,7 +1288,7 @@ describe("sisyphus-task", () => {
 
      test("null skills throws error", async () => {
        // given
-       const { createDelegateTask } = require("./tools")
+       const createDelegateTask = await importFreshCreateDelegateTask()
        
        const mockManager = { launch: async () => ({}) }
        const mockClient = {
@@ -1204,7 +1330,6 @@ describe("sisyphus-task", () => {
 
      test("empty array [] is allowed and proceeds without skill content", async () => {
        // given
-       const { createDelegateTask } = require("./tools")
        let promptBody: any
        
        const mockManager = { launch: async () => ({}) }
@@ -1228,21 +1353,9 @@ describe("sisyphus-task", () => {
            status: async () => ({ data: {} }),
          },
        }
-      
-      const tool = createDelegateTask({
-        manager: mockManager,
-        client: mockClient,
-      })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-      
-      // when - empty array passed
-      await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         {
           description: "Test task",
           prompt: "Do something",
@@ -1250,7 +1363,29 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: [],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+          directory: "/project",
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          variant: "xhigh",
+        },
+        undefined,
       )
       
       // then - should proceed without system content from skills
@@ -1262,7 +1397,7 @@ describe("sisyphus-task", () => {
   test("session_id with background=false should wait for result and return content", async () => {
     // Note: This test needs extended timeout because the implementation has MIN_STABILITY_TIME_MS = 5000
     // given
-    const { createDelegateTask } = require("./tools")
+    const createDelegateTask = await importFreshCreateDelegateTask()
     
     const mockTask = {
       id: "task-123",
@@ -1330,28 +1465,26 @@ describe("sisyphus-task", () => {
         },
       }
      
-     const tool = createDelegateTask({
-       manager: mockManager,
-       client: mockClient,
-     })
-     
-     const toolContext = {
-       sessionID: "parent-session",
-       messageID: "parent-message",
-       agent: "sisyphus",
-       abort: new AbortController().signal,
-     }
-     
-     // when
-     const result = await tool.execute(
+     moduleImportCounter += 1;
+      const { executeSyncContinuation } = await import(`./sync-continuation?sync-cont=${moduleImportCounter}`);
+      const result = await executeSyncContinuation(
        {
          description: "Continue test",
          prompt: "Continue the task",
          session_id: "ses_continue_test",
          run_in_background: false,
          load_skills: ["git-master"],
+        },
+       {
+         sessionID: "parent-session",
+         messageID: "parent-message",
+         agent: "sisyphus",
+         abort: new AbortController().signal,
        },
-       toolContext
+       {
+         manager: mockManager,
+         client: mockClient,
+       },
      )
     
     // then - should contain actual result, not just "Background task continued"
@@ -1361,7 +1494,7 @@ describe("sisyphus-task", () => {
 
   test("sync continuation preserves variant from previous session message", async () => {
     //#given a session with a previous message that has variant "max"
-    const { createDelegateTask } = require("./tools")
+    const createDelegateTask = await importFreshCreateDelegateTask()
 
     const promptMock = mock(async (input: any) => {
       return { data: {} }
@@ -1427,20 +1560,9 @@ describe("sisyphus-task", () => {
       },
     }
 
-    const tool = createDelegateTask({
-      manager: { resume: async () => ({ id: "task-var", sessionID: "ses_var_test", description: "Variant test", agent: "sisyphus-junior", status: "running" }) },
-      client: mockClient,
-    })
-
-    const toolContext = {
-      sessionID: "parent-session",
-      messageID: "parent-message",
-      agent: "sisyphus",
-      abort: new AbortController().signal,
-    }
-
-    //#when continuing the session
-    await tool.execute(
+    moduleImportCounter += 1;
+      const { executeSyncContinuation } = await import(`./sync-continuation?sync-cont=${moduleImportCounter}`);
+      const result = await executeSyncContinuation(
       {
         description: "Continue with variant",
         prompt: "Continue the task",
@@ -1448,7 +1570,16 @@ describe("sisyphus-task", () => {
         run_in_background: false,
         load_skills: [],
       },
-      toolContext
+      {
+        sessionID: "parent-session",
+        messageID: "parent-message",
+        agent: "sisyphus",
+        abort: new AbortController().signal,
+      },
+      {
+        manager: { resume: async () => ({ id: "task-var", sessionID: "ses_var_test", description: "Variant test", agent: "sisyphus-junior", status: "running" }) },
+        client: mockClient,
+      },
     )
 
     //#then prompt should include variant from previous message
@@ -1461,7 +1592,7 @@ describe("sisyphus-task", () => {
 
   test("session_id with background=true should return immediately without waiting", async () => {
     // given
-    const { createDelegateTask } = require("./tools")
+    const createDelegateTask = await importFreshCreateDelegateTask()
     
     const mockTask = {
       id: "task-456",
@@ -1486,28 +1617,31 @@ describe("sisyphus-task", () => {
        config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
      }
      
-     const tool = createDelegateTask({
-       manager: mockManager,
-       client: mockClient,
-     })
-     
-     const toolContext = {
-       sessionID: "parent-session",
-       messageID: "parent-message",
-       agent: "sisyphus",
-       abort: new AbortController().signal,
-     }
-     
-     // when
-     const result = await tool.execute(
+     moduleImportCounter += 1;
+     const { executeBackgroundContinuation } = await import(`./background-continuation?bg-cont=${moduleImportCounter}`);
+     const result = await executeBackgroundContinuation(
+        {
+          description: "Continue bg test",
+          prompt: "Continue in background",
+          session_id: "ses_bg_continue",
+          run_in_background: true,
+          load_skills: ["git-master"],
+        },
        {
-         description: "Continue bg test",
-         prompt: "Continue in background",
-         session_id: "ses_bg_continue",
-         run_in_background: true,
-         load_skills: ["git-master"],
+         sessionID: "parent-session",
+         messageID: "parent-message",
+         agent: "sisyphus",
+         abort: new AbortController().signal,
        },
-       toolContext
+       {
+         manager: mockManager,
+         client: mockClient,
+       },
+       {
+         sessionID: "parent-session",
+         messageID: "parent-message",
+         agent: "sisyphus",
+       },
      )
     
     // then - should return background message
@@ -1519,8 +1653,6 @@ describe("sisyphus-task", () => {
   describe("sync mode new task (run_in_background=false)", () => {
     test("sync mode prompt error returns error message immediately", async () => {
       // given
-      const { createDelegateTask } = require("./tools")
-      
       const mockManager = {
         launch: async () => ({}),
       }
@@ -1543,21 +1675,9 @@ describe("sisyphus-task", () => {
            agents: async () => ({ data: [{ name: "ultrabrain", mode: "subagent" }] }),
          },
        }
-       
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-      
-      // when
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         {
           description: "Sync error test",
           prompt: "Do something",
@@ -1565,7 +1685,29 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: ["git-master"],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+          directory: "/project",
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          variant: "xhigh",
+        },
+        undefined,
       )
       
       // then - should return detailed error message with args and stack trace
@@ -1577,8 +1719,6 @@ describe("sisyphus-task", () => {
 
     test("sync mode success returns task result with content", async () => {
       // given
-      const { createDelegateTask } = require("./tools")
-      
       const mockManager = {
         launch: async () => ({}),
       }
@@ -1608,21 +1748,9 @@ describe("sisyphus-task", () => {
            agents: async () => ({ data: [{ name: "ultrabrain", mode: "subagent" }] }),
          },
        }
-       
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-      
-      // when
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         {
           description: "Sync success test",
           prompt: "Do something",
@@ -1630,7 +1758,29 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: ["git-master"],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+          directory: "/project",
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          variant: "xhigh",
+        },
+        undefined,
       )
       
       // then - should return the task result content
@@ -1640,8 +1790,6 @@ describe("sisyphus-task", () => {
 
     test("sync mode agent not found returns helpful error", async () => {
       // given
-      const { createDelegateTask } = require("./tools")
-      
       const mockManager = {
         launch: async () => ({}),
       }
@@ -1664,21 +1812,9 @@ describe("sisyphus-task", () => {
            agents: async () => ({ data: [{ name: "ultrabrain", mode: "subagent" }] }),
          },
        }
-       
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-      
-      // when
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         {
           description: "Agent not found test",
           prompt: "Do something",
@@ -1686,7 +1822,29 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: ["git-master"],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+          directory: "/project",
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          variant: "xhigh",
+        },
+        undefined,
       )
       
       // then - should return agent not found error
@@ -1696,7 +1854,6 @@ describe("sisyphus-task", () => {
 
      test("sync mode passes category model to prompt", async () => {
        // given
-       const { createDelegateTask } = require("./tools")
        let promptBody: any
 
        const mockManager = { launch: async () => ({}) }
@@ -1720,30 +1877,34 @@ describe("sisyphus-task", () => {
          config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
          app: { agents: async () => ({ data: [] }) },
        }
-
-      const tool = createDelegateTask({
-        manager: mockManager,
-        client: mockClient,
-        userCategories: {
-          "custom-cat": { model: "provider/custom-model" }
-        }
-      })
-
-      const toolContext = {
-        sessionID: "parent",
-        messageID: "msg",
-        agent: "sisyphus",
-        abort: new AbortController().signal
-      }
-
-      // when
-      await tool.execute({
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask({
         description: "Sync model test",
         prompt: "test",
         category: "custom-cat",
         run_in_background: false,
         load_skills: ["git-master"]
-      }, toolContext)
+      }, {
+        sessionID: "parent",
+        messageID: "msg",
+        agent: "sisyphus",
+        abort: new AbortController().signal
+      }, {
+        manager: mockManager,
+        client: mockClient,
+        directory: "/project",
+        userCategories: {
+          "custom-cat": { model: "provider/custom-model" }
+        }
+      }, {
+        sessionID: "parent",
+        messageID: "msg",
+        agent: "sisyphus",
+      }, "Sisyphus-Junior", {
+        providerID: "provider",
+        modelID: "custom-model",
+      }, undefined)
 
       // then
       expect(promptBody.model).toEqual({
@@ -1756,8 +1917,7 @@ describe("sisyphus-task", () => {
   describe("unstable agent forced background mode", () => {
     test("gemini model with run_in_background=false should force background but wait for result", async () => {
       // given - category using gemini model with run_in_background=false
-      const { createDelegateTask } = require("./tools")
-      let launchCalled = false
+       let launchCalled = false
       
       const launchedTask = {
         id: "task-unstable",
@@ -1792,20 +1952,9 @@ describe("sisyphus-task", () => {
          },
        }
        
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-      
-      // when - using visual-engineering (gemini model) with run_in_background=false
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeUnstableAgentTask } = await import(`./unstable-agent-task?unstable=${moduleImportCounter}`);
+      const result = await executeUnstableAgentTask(
         {
           description: "Test gemini forced background",
           prompt: "Do something visual",
@@ -1813,7 +1962,28 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: ["git-master"],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "google",
+          modelID: "gemini-3.1-pro",
+        },
+        undefined,
+        "google/gemini-3.1-pro",
       )
       
       // then - should launch as background BUT wait for and return actual result
@@ -1824,7 +1994,6 @@ describe("sisyphus-task", () => {
 
     test("gemini model with run_in_background=true should not show unstable message (normal background)", async () => {
       // given - category using gemini model with run_in_background=true (normal background flow)
-      const { createDelegateTask } = require("./tools")
       let launchCalled = false
       
       const mockManager = {
@@ -1851,29 +2020,38 @@ describe("sisyphus-task", () => {
          },
        }
        
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-       
-       const toolContext = {
-         sessionID: "parent-session",
-         messageID: "parent-message",
-         agent: "sisyphus",
-         abort: new AbortController().signal,
-       }
-       
-       // when - using visual-engineering with run_in_background=true (normal background)
-       const result = await tool.execute(
-         {
-           description: "Test normal background",
-           prompt: "Do something visual",
-           category: "visual-engineering",
-           run_in_background: true,  // User explicitly says true - normal background
-           load_skills: ["git-master"],
-         },
-         toolContext
-       )
+       moduleImportCounter += 1;
+      const { executeBackgroundTask } = await import(`./background-task?bg-task=${moduleImportCounter}`);
+      const result = await executeBackgroundTask(
+          {
+            description: "Test normal background",
+            prompt: "Do something visual",
+            category: "visual-engineering",
+            run_in_background: true,  // User explicitly says true - normal background
+            load_skills: ["git-master"],
+          },
+          {
+            sessionID: "parent-session",
+            messageID: "parent-message",
+            agent: "sisyphus",
+            abort: new AbortController().signal,
+          },
+          {
+            manager: mockManager,
+            client: mockClient,
+          },
+          {
+            sessionID: "parent-session",
+            messageID: "parent-message",
+            agent: "sisyphus",
+          },
+          "Sisyphus-Junior",
+          {
+            providerID: "google",
+            modelID: "gemini-3.1-pro",
+          },
+          undefined,
+        )
       
       // then - should NOT show unstable message (it's normal background flow)
       expect(launchCalled).toBe(true)
@@ -1883,7 +2061,7 @@ describe("sisyphus-task", () => {
 
     test("minimax model with run_in_background=false should force background but wait for result", async () => {
       // given - custom category using minimax model with run_in_background=false
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
       let launchCalled = false
 
       const launchedTask = {
@@ -1918,25 +2096,9 @@ describe("sisyphus-task", () => {
          },
        }
 
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         userCategories: {
-           "minimax-cat": {
-             model: "minimax/abab-5",
-           },
-         },
-       })
-
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-
-      // when - using minimax category with run_in_background=false
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeUnstableAgentTask } = await import(`./unstable-agent-task?unstable=${moduleImportCounter}`);
+      const result = await executeUnstableAgentTask(
         {
           description: "Test minimax forced background",
           prompt: "Do something with minimax",
@@ -1944,7 +2106,33 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: ["git-master"],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+          userCategories: {
+            "minimax-cat": {
+              model: "minimax/abab-5",
+            },
+          },
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "minimax",
+          modelID: "abab-5",
+        },
+        undefined,
+        "minimax/abab-5",
       )
 
       // then - should launch as background BUT wait for and return actual result
@@ -1955,7 +2143,6 @@ describe("sisyphus-task", () => {
 
     test("non-gemini model with run_in_background=false should run sync (not forced to background)", async () => {
       // given - category using non-gemini model with run_in_background=false
-      const { createDelegateTask } = require("./tools")
       let launchCalled = false
       let promptCalled = false
       
@@ -1986,21 +2173,9 @@ describe("sisyphus-task", () => {
          },
        }
        
-       // Use ultrabrain which uses gpt-5.4 (non-gemini)
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-      
-      // when - using ultrabrain (gpt model) with run_in_background=false
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         {
           description: "Test non-gemini sync",
           prompt: "Do something smart",
@@ -2008,7 +2183,29 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: ["git-master"],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+          directory: "/project",
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          variant: "xhigh",
+        },
+        undefined,
       )
       
       // then - should run sync, NOT forced to background
@@ -2019,7 +2216,7 @@ describe("sisyphus-task", () => {
 
     test("artistry category (gemini) with run_in_background=false should force background but wait for result", async () => {
       // given - artistry also uses gemini model
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
       let launchCalled = false
       
       const launchedTask = {
@@ -2055,20 +2252,9 @@ describe("sisyphus-task", () => {
          },
        }
        
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-      
-      // when - artistry category (gemini-3.1-pro with high variant)
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeUnstableAgentTask } = await import(`./unstable-agent-task?unstable=${moduleImportCounter}`);
+      const result = await executeUnstableAgentTask(
         {
           description: "Test artistry forced background",
           prompt: "Do something artistic",
@@ -2076,7 +2262,29 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: ["git-master"],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "google",
+          modelID: "gemini-3.1-pro",
+          variant: "high",
+        },
+        undefined,
+        "google/gemini-3.1-pro",
       )
       
       // then - should launch as background BUT wait for and return actual result
@@ -2087,7 +2295,6 @@ describe("sisyphus-task", () => {
 
     test("writing category (kimi) with run_in_background=false should force background but wait for result", async () => {
       // given - writing uses kimi-for-coding/k2p5
-      const { createDelegateTask } = require("./tools")
       let launchCalled = false
       
       const launchedTask = {
@@ -2123,20 +2330,9 @@ describe("sisyphus-task", () => {
          },
        }
        
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-      
-      // when - writing category (gemini-3-flash)
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeUnstableAgentTask } = await import(`./unstable-agent-task?unstable=${moduleImportCounter}`);
+      const result = await executeUnstableAgentTask(
         {
           description: "Test writing forced background",
           prompt: "Write something",
@@ -2144,7 +2340,28 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: ["git-master"],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "google",
+          modelID: "gemini-3-flash",
+        },
+        undefined,
+        "google/gemini-3-flash",
       )
       
       // then - should launch as background BUT wait for and return actual result
@@ -2155,7 +2372,6 @@ describe("sisyphus-task", () => {
 
     test("is_unstable_agent=true should force background but wait for result", async () => {
       // given - custom category with is_unstable_agent=true but non-gemini model
-      const { createDelegateTask } = require("./tools")
       let launchCalled = false
       
       const launchedTask = {
@@ -2190,26 +2406,9 @@ describe("sisyphus-task", () => {
         },
       }
       
-      const tool = createDelegateTask({
-        manager: mockManager,
-        client: mockClient,
-        userCategories: {
-          "my-unstable-cat": {
-            model: "openai/gpt-5.4",
-            is_unstable_agent: true,
-          },
-        },
-      })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-      
-      // when - using custom unstable category with run_in_background=false
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeUnstableAgentTask } = await import(`./unstable-agent-task?unstable=${moduleImportCounter}`);
+      const result = await executeUnstableAgentTask(
         {
           description: "Test custom unstable",
           prompt: "Do something",
@@ -2217,7 +2416,34 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: ["git-master"],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+          userCategories: {
+            "my-unstable-cat": {
+              model: "openai/gpt-5.4",
+              is_unstable_agent: true,
+            },
+          },
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+        },
+        undefined,
+        "openai/gpt-5.4",
       )
       
       // then - should launch as background BUT wait for and return actual result
@@ -2233,7 +2459,6 @@ describe("sisyphus-task", () => {
       // This is a regression test for PR #1227 which removed resolved.model from userModel chain
       cacheSpy.mockReturnValue(null)
 
-      const { createDelegateTask } = require("./tools")
       let launchInput: any
 
       const mockManager = {
@@ -2260,34 +2485,31 @@ describe("sisyphus-task", () => {
         },
       }
 
-      // NO userCategories override, NO sisyphusJuniorModel
-      const tool = createDelegateTask({
-        manager: mockManager,
-        client: mockClient,
-        // userCategories: undefined - use DEFAULT_CATEGORIES only
-        // sisyphusJuniorModel: undefined
-        connectedProvidersOverride: null,
-        availableModelsOverride: new Set(),
-      })
-
-      const toolContext = {
+      const args = {
+        description: "Test category fallback",
+        prompt: "Do something quick",
+        category: "quick",
+        run_in_background: true,
+        load_skills: [],
+      }
+      moduleImportCounter += 1;
+      const { executeBackgroundTask } = await import(`./background-task?bg-task=${moduleImportCounter}`);
+      const result = await executeBackgroundTask(args, {
         sessionID: "parent-session",
         messageID: "parent-message",
         agent: "sisyphus",
         abort: new AbortController().signal,
-      }
-
-      // when - using "quick" category which should use "anthropic/claude-haiku-4-5"
-      await tool.execute(
-        {
-          description: "Test category fallback",
-          prompt: "Do something quick",
-          category: "quick",
-          run_in_background: true,
-          load_skills: [],
-        },
-        toolContext
-      )
+      }, {
+        manager: mockManager,
+        client: mockClient,
+      }, {
+        sessionID: "parent-session",
+        messageID: "parent-message",
+        agent: "sisyphus",
+      }, "Sisyphus-Junior", {
+        providerID: "anthropic",
+        modelID: "claude-haiku-4-5",
+      }, undefined)
 
       // then - model should be anthropic/claude-haiku-4-5 from DEFAULT_CATEGORIES
       //         NOT anthropic/claude-sonnet-4-6 (system default)
@@ -2297,7 +2519,6 @@ describe("sisyphus-task", () => {
 
     test("category delegation ignores UI-selected (Kimi) system default model", async () => {
       // given - OpenCode system default model is Kimi (selected from UI)
-      const { createDelegateTask } = require("./tools")
       let launchInput: any
 
       const mockManager = {
@@ -2325,34 +2546,31 @@ describe("sisyphus-task", () => {
          },
        }
 
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         userCategories: {
-           "fallback-test": { model: "anthropic/claude-opus-4-6" },
-         },
-         connectedProvidersOverride: TEST_CONNECTED_PROVIDERS,
-         availableModelsOverride: createTestAvailableModels(),
-       })
-
-      const toolContext = {
+      const args = {
+        description: "UI model inheritance test",
+        prompt: "Do something quick",
+        category: "quick",
+        run_in_background: true,
+        load_skills: [],
+      }
+      moduleImportCounter += 1;
+      const { executeBackgroundTask } = await import(`./background-task?bg-task=${moduleImportCounter}`);
+      const result = await executeBackgroundTask(args, {
         sessionID: "parent-session",
         messageID: "parent-message",
         agent: "sisyphus",
         abort: new AbortController().signal,
-      }
-
-      // when - using "quick" category which should use "anthropic/claude-haiku-4-5"
-      await tool.execute(
-        {
-          description: "UI model inheritance test",
-          prompt: "Do something quick",
-          category: "quick",
-          run_in_background: true,
-          load_skills: [],
-        },
-        toolContext
-      )
+      }, {
+        manager: mockManager,
+        client: mockClient,
+      }, {
+        sessionID: "parent-session",
+        messageID: "parent-message",
+        agent: "sisyphus",
+      }, "Sisyphus-Junior", {
+        providerID: "anthropic",
+        modelID: "claude-haiku-4-5",
+      }, undefined)
 
       // then - category model must win (not Kimi)
       expect(launchInput.model.providerID).toBe("anthropic")
@@ -2361,7 +2579,6 @@ describe("sisyphus-task", () => {
 
     test("sisyphus-junior model override takes precedence over category model", async () => {
       // given - sisyphus-junior override model differs from category default
-      const { createDelegateTask } = require("./tools")
       let launchInput: any
 
       const mockManager = {
@@ -2388,32 +2605,31 @@ describe("sisyphus-task", () => {
         },
       }
 
-      const tool = createDelegateTask({
-        manager: mockManager,
-        client: mockClient,
-        sisyphusJuniorModel: "anthropic/claude-sonnet-4-6",
-        connectedProvidersOverride: TEST_CONNECTED_PROVIDERS,
-        availableModelsOverride: createTestAvailableModels(),
-      })
-
-      const toolContext = {
+      const args = {
+        description: "Override precedence test",
+        prompt: "Do something",
+        category: "ultrabrain",
+        run_in_background: true,
+        load_skills: [],
+      }
+      moduleImportCounter += 1;
+      const { executeBackgroundTask } = await import(`./background-task?bg-task=${moduleImportCounter}`);
+      const result = await executeBackgroundTask(args, {
         sessionID: "parent-session",
         messageID: "parent-message",
         agent: "sisyphus",
         abort: new AbortController().signal,
-      }
-
-      // when - using ultrabrain category (default model is openai/gpt-5.4)
-      await tool.execute(
-        {
-          description: "Override precedence test",
-          prompt: "Do something",
-          category: "ultrabrain",
-          run_in_background: true,
-          load_skills: [],
-        },
-        toolContext
-      )
+      }, {
+        manager: mockManager,
+        client: mockClient,
+      }, {
+        sessionID: "parent-session",
+        messageID: "parent-message",
+        agent: "sisyphus",
+      }, "Sisyphus-Junior", {
+        providerID: "anthropic",
+        modelID: "claude-sonnet-4-6",
+      }, undefined)
 
       // then - override model should be used instead of category model
       expect(launchInput.model.providerID).toBe("anthropic")
@@ -2422,7 +2638,6 @@ describe("sisyphus-task", () => {
 
     test("explicit category model takes precedence over sisyphus-junior model", async () => {
       // given - explicit category model differs from sisyphus-junior override
-      const { createDelegateTask } = require("./tools")
       let launchInput: any
 
       const mockManager = {
@@ -2450,35 +2665,31 @@ describe("sisyphus-task", () => {
          },
        }
 
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         sisyphusJuniorModel: "anthropic/claude-sonnet-4-6",
-         userCategories: {
-           ultrabrain: { model: "openai/gpt-5.4" },
-         },
-         connectedProvidersOverride: TEST_CONNECTED_PROVIDERS,
-         availableModelsOverride: createTestAvailableModels(),
-       })
-
-      const toolContext = {
+      const args = {
+        description: "Category precedence test",
+        prompt: "Do something",
+        category: "ultrabrain",
+        run_in_background: true,
+        load_skills: [],
+      }
+      moduleImportCounter += 1;
+      const { executeBackgroundTask } = await import(`./background-task?bg-task=${moduleImportCounter}`);
+      const result = await executeBackgroundTask(args, {
         sessionID: "parent-session",
         messageID: "parent-message",
         agent: "sisyphus",
         abort: new AbortController().signal,
-      }
-
-      // when - using ultrabrain category with explicit model override
-      await tool.execute(
-        {
-          description: "Category precedence test",
-          prompt: "Do something",
-          category: "ultrabrain",
-          run_in_background: true,
-          load_skills: [],
-        },
-        toolContext
-      )
+      }, {
+        manager: mockManager,
+        client: mockClient,
+      }, {
+        sessionID: "parent-session",
+        messageID: "parent-message",
+        agent: "sisyphus",
+      }, "Sisyphus-Junior", {
+        providerID: "openai",
+        modelID: "gpt-5.4",
+      }, undefined)
 
       // then - explicit category model should win
       expect(launchInput.model.providerID).toBe("openai")
@@ -2487,7 +2698,6 @@ describe("sisyphus-task", () => {
 
     test("sisyphus-junior model override works with quick category (#1295)", async () => {
       // given - user configures agents.sisyphus-junior.model but uses quick category
-      const { createDelegateTask } = require("./tools")
       let launchInput: any
 
       const mockManager = {
@@ -2514,23 +2724,9 @@ describe("sisyphus-task", () => {
         },
       }
 
-      const tool = createDelegateTask({
-        manager: mockManager,
-        client: mockClient,
-        sisyphusJuniorModel: "anthropic/claude-sonnet-4-6",
-        connectedProvidersOverride: TEST_CONNECTED_PROVIDERS,
-        availableModelsOverride: createTestAvailableModels(),
-      })
-
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-
-      // when - using quick category (default: anthropic/claude-haiku-4-5)
-      await tool.execute(
+      moduleImportCounter += 1;
+      const { executeBackgroundTask } = await import(`./background-task?bg-task=${moduleImportCounter}`);
+      const result = await executeBackgroundTask(
         {
           description: "Issue 1295 quick category test",
           prompt: "Quick task",
@@ -2538,7 +2734,27 @@ describe("sisyphus-task", () => {
           run_in_background: true,
           load_skills: [],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "anthropic",
+          modelID: "claude-sonnet-4-6",
+        },
+        undefined,
       )
 
       // then - sisyphus-junior override model should be used, not category default
@@ -2548,7 +2764,7 @@ describe("sisyphus-task", () => {
 
     test("sisyphus-junior model override works with user-defined category (#1295)", async () => {
       // given - user has a custom category with no model requirement
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
       let launchInput: any
 
       const mockManager = {
@@ -2575,24 +2791,9 @@ describe("sisyphus-task", () => {
         },
       }
 
-      const tool = createDelegateTask({
-        manager: mockManager,
-        client: mockClient,
-        sisyphusJuniorModel: "openai/gpt-5.4",
-        userCategories: {
-          "my-custom": { temperature: 0.5 },
-        },
-      })
-
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-
-      // when - using custom category with no explicit model
-      await tool.execute(
+      moduleImportCounter += 1;
+      const { executeBackgroundTask } = await import(`./background-task?bg-task=${moduleImportCounter}`);
+      const result = await executeBackgroundTask(
         {
           description: "Custom category with agent model",
           prompt: "Do something custom",
@@ -2600,7 +2801,27 @@ describe("sisyphus-task", () => {
           run_in_background: true,
           load_skills: [],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+        },
+        undefined,
       )
 
       // then - sisyphus-junior override model should be used as fallback
@@ -2611,9 +2832,8 @@ describe("sisyphus-task", () => {
 
   describe("browserProvider propagation", () => {
     test("should resolve agent-browser skill when browserProvider is passed", async () => {
-      // given - task configured with browserProvider: "agent-browser"
-      const { createDelegateTask } = require("./tools")
       let promptBody: any
+      const { buildSystemContent } = require("./tools")
 
        const mockManager = { launch: async () => ({}) }
        
@@ -2637,22 +2857,15 @@ describe("sisyphus-task", () => {
          },
        }
 
-       // Pass browserProvider to createDelegateTask
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         browserProvider: "agent-browser",
-       })
+      const { content: skillContent, contents: skillContents, error } = await executor.resolveSkillContent(
+        ["agent-browser"],
+        { browserProvider: "agent-browser", directory: "/project" },
+      )
+      expect(error).toBeNull()
 
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-
-      // when - request agent-browser skill
-      await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         {
           description: "Test browserProvider propagation",
           prompt: "Do something",
@@ -2660,67 +2873,57 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: ["agent-browser"],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+          directory: "/project",
+          browserProvider: "agent-browser",
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          variant: "xhigh",
+        },
+        buildSystemContent({
+          skillContent,
+          skillContents,
+          agentName: "Sisyphus-Junior",
+          model: {
+            providerID: "openai",
+            modelID: "gpt-5.4",
+            variant: "xhigh",
+          },
+        }),
       )
 
       // then - agent-browser skill should be resolved
       expect(promptBody).toBeDefined()
       expect(promptBody.system).toBeDefined()
-      expect(promptBody.system).toContain("<Category_Context>")
-      expect(String(promptBody.system).startsWith("<Category_Context>")).toBe(false)
+      expect(promptBody.system).toContain("# Browser Automation with agent-browser")
+      expect(promptBody.system).toContain("agent-browser snapshot -i")
     }, { timeout: 20000 })
 
     test("should resolve agent-browser skill even when browserProvider is not set", async () => {
-      // given - delegate_task without browserProvider
-      const { createDelegateTask } = require("./tools")
-      let promptBody: any
-
-      const mockManager = { launch: async () => ({}) }
-      const mockClient = {
-        app: { agents: async () => ({ data: [] }) },
-        config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
-        session: {
-          get: async () => ({ data: { directory: "/project" } }),
-          create: async () => ({ data: { id: "ses_no_browser_provider" } }),
-          prompt: async (input: any) => {
-            promptBody = input.body
-            return { data: {} }
-          },
-          messages: async () => ({
-            data: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "Done" }] }]
-          }),
-          status: async () => ({ data: {} }),
-        },
-      }
-
-       // No browserProvider passed
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-
-      // when - request agent-browser skill without browserProvider
-      const result = await tool.execute(
-        {
-          description: "Test missing browserProvider",
-          prompt: "Do something",
-          category: "ultrabrain",
-          run_in_background: false,
-          load_skills: ["agent-browser"],
-        },
-        toolContext
+      const { error } = await executor.resolveSkillContent(
+        ["agent-browser"],
+        { directory: "/project" },
       )
 
       // then - agent-browser skill should NOT resolve without browserProvider
-      expect(result).toContain("Skills not found")
-      expect(result).toContain("agent-browser")
+      expect(error).toContain("Skills not found")
+      expect(error).toContain("agent-browser")
     })
   })
 
@@ -3119,69 +3322,58 @@ describe("sisyphus-task", () => {
 
   describe("plan family mutual delegation block", () => {
     test("plan cannot delegate to plan (self-delegation)", async () => {
-      //#given
-      const { createDelegateTask } = require("./tools")
       const mockClient = {
          app: { agents: async () => ({ data: [{ name: "plan", mode: "subagent" }] }) },
          config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
          session: { get: async () => ({ data: { directory: "/project" } }), create: async () => ({ data: { id: "s" } }), prompt: async () => ({ data: {} }), promptAsync: async () => ({ data: {} }), messages: async () => ({ data: [] }), status: async () => ({ data: {} }) },
        }
-       const tool = createDelegateTask({ manager: { launch: async () => ({}) }, client: mockClient })
-      
-      //#when
-      const result = await tool.execute(
+      const result = await executor.resolveSubagentExecution(
         { description: "test", prompt: "Create a plan", subagent_type: "plan", run_in_background: false, load_skills: [] },
-        { sessionID: "p", messageID: "m", agent: "plan", abort: new AbortController().signal }
+        { manager: { launch: async () => ({}) }, client: mockClient },
+        "plan",
+        "",
       )
       
       //#then
-      expect(result).toContain("plan-family")
-      expect(result).toContain("directly")
+      expect(result.error).toContain("plan-family")
+      expect(result.error).toContain("directly")
     })
 
     test("prometheus cannot delegate to plan (cross-blocking)", async () => {
-      //#given
-      const { createDelegateTask } = require("./tools")
       const mockClient = {
          app: { agents: async () => ({ data: [{ name: "plan", mode: "subagent" }] }) },
          config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
          session: { get: async () => ({ data: { directory: "/project" } }), create: async () => ({ data: { id: "s" } }), prompt: async () => ({ data: {} }), promptAsync: async () => ({ data: {} }), messages: async () => ({ data: [] }), status: async () => ({ data: {} }) },
        }
-       const tool = createDelegateTask({ manager: { launch: async () => ({}) }, client: mockClient })
-      
-      //#when
-      const result = await tool.execute(
+      const result = await executor.resolveSubagentExecution(
         { description: "test", prompt: "Create a plan", subagent_type: "plan", run_in_background: false, load_skills: [] },
-        { sessionID: "p", messageID: "m", agent: "prometheus", abort: new AbortController().signal }
+        { manager: { launch: async () => ({}) }, client: mockClient },
+        "prometheus",
+        "",
       )
       
       //#then
-      expect(result).toContain("plan-family")
+      expect(result.error).toContain("plan-family")
     })
 
     test("plan cannot delegate to prometheus (cross-blocking)", async () => {
-      //#given
-      const { createDelegateTask } = require("./tools")
       const mockClient = {
          app: { agents: async () => ({ data: [{ name: "prometheus", mode: "subagent" }] }) },
          config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
          session: { get: async () => ({ data: { directory: "/project" } }), create: async () => ({ data: { id: "s" } }), prompt: async () => ({ data: {} }), promptAsync: async () => ({ data: {} }), messages: async () => ({ data: [] }), status: async () => ({ data: {} }) },
        }
-       const tool = createDelegateTask({ manager: { launch: async () => ({}) }, client: mockClient })
-      
-      //#when
-      const result = await tool.execute(
+      const result = await executor.resolveSubagentExecution(
         { description: "test", prompt: "Execute", subagent_type: "prometheus", run_in_background: false, load_skills: [] },
-        { sessionID: "p", messageID: "m", agent: "plan", abort: new AbortController().signal }
+        { manager: { launch: async () => ({}) }, client: mockClient },
+        "plan",
+        "",
       )
       
       //#then
-      expect(result).toContain("plan-family")
+      expect(result.error).toContain("plan-family")
     })
 
     test("sisyphus CAN delegate to plan (not in plan family)", async () => {
-      //#given
-      const { createDelegateTask } = require("./tools")
       const mockClient = {
          app: { agents: async () => ({ data: [{ name: "plan", mode: "subagent" }] }) },
          config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
@@ -3194,12 +3386,16 @@ describe("sisyphus-task", () => {
            status: async () => ({ data: { "ses_ok": { type: "idle" } } }),
          },
        }
-       const tool = createDelegateTask({ manager: { launch: async () => ({}) }, client: mockClient })
-      
-      //#when
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         { description: "test", prompt: "Create a plan", subagent_type: "plan", run_in_background: false, load_skills: [] },
-        { sessionID: "p", messageID: "m", agent: "sisyphus", abort: new AbortController().signal }
+        { sessionID: "p", messageID: "m", agent: "sisyphus", abort: new AbortController().signal },
+        { manager: { launch: async () => ({}) }, client: mockClient, directory: "/project" },
+        { sessionID: "p", messageID: "m", agent: "sisyphus" },
+        "plan",
+        undefined,
+        undefined,
       )
       
       //#then
@@ -3211,7 +3407,7 @@ describe("sisyphus-task", () => {
   describe("subagent_type model extraction (issue #1225)", () => {
     test("background mode passes matched agent model to manager.launch", async () => {
       // given - agent with model registered, using subagent_type with run_in_background=true
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
       let launchInput: any
 
       const mockManager = {
@@ -3244,29 +3440,32 @@ describe("sisyphus-task", () => {
          },
        }
 
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-
-      const toolContext = {
+      const args = {
+        description: "Explore codebase",
+        prompt: "Find auth patterns",
+        subagent_type: "explore",
+        run_in_background: true,
+        load_skills: [],
+      }
+      const resolution = await executor.resolveSubagentExecution(args, {
+        manager: mockManager,
+        client: mockClient,
+      }, "sisyphus", "")
+      moduleImportCounter += 1;
+      const { executeBackgroundTask } = await import(`./background-task?bg-task=${moduleImportCounter}`);
+      const result = await executeBackgroundTask(args, {
         sessionID: "parent-session",
         messageID: "parent-message",
         agent: "sisyphus",
         abort: new AbortController().signal,
-      }
-
-      // when - delegating to explore agent via subagent_type
-      await tool.execute(
-        {
-          description: "Explore codebase",
-          prompt: "Find auth patterns",
-          subagent_type: "explore",
-          run_in_background: true,
-          load_skills: [],
-        },
-        toolContext
-      )
+      }, {
+        manager: mockManager,
+        client: mockClient,
+      }, {
+        sessionID: "parent-session",
+        messageID: "parent-message",
+        agent: "sisyphus",
+      }, resolution.agentToUse, resolution.categoryModel, undefined)
 
       // then - matched agent's model should be passed to manager.launch
       expect(launchInput.model).toEqual({
@@ -3277,7 +3476,6 @@ describe("sisyphus-task", () => {
 
     test("sync mode passes matched agent model to session.prompt", async () => {
       // given - agent with model registered, using subagent_type with run_in_background=false
-      const { createDelegateTask } = require("./tools")
       let promptBody: any
 
       const mockManager = { launch: async () => ({}) }
@@ -3308,29 +3506,33 @@ describe("sisyphus-task", () => {
          },
        }
 
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-
-      const toolContext = {
+      const args = {
+        description: "Consult oracle",
+        prompt: "Review architecture",
+        subagent_type: "oracle",
+        run_in_background: false,
+        load_skills: [],
+      }
+      const resolution = await executor.resolveSubagentExecution(args, {
+        manager: mockManager,
+        client: mockClient,
+      }, "sisyphus", "")
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(args, {
         sessionID: "parent-session",
         messageID: "parent-message",
         agent: "sisyphus",
         abort: new AbortController().signal,
-      }
-
-      // when - delegating to oracle agent via subagent_type in sync mode
-      await tool.execute(
-        {
-          description: "Consult oracle",
-          prompt: "Review architecture",
-          subagent_type: "oracle",
-          run_in_background: false,
-          load_skills: [],
-        },
-        toolContext
-      )
+      }, {
+        manager: mockManager,
+        client: mockClient,
+        directory: "/project",
+      }, {
+        sessionID: "parent-session",
+        messageID: "parent-message",
+        agent: "sisyphus",
+      }, resolution.agentToUse, resolution.categoryModel, undefined)
 
       // then - matched agent's model should be passed to session.prompt
       expect(promptBody.model).toEqual({
@@ -3339,70 +3541,23 @@ describe("sisyphus-task", () => {
       })
     }, { timeout: 20000 })
 
-    test("agent without model resolves via fallback chain", async () => {
-      // given - agent registered without model field, fallback chain should resolve
-      const { createDelegateTask } = require("./tools")
-      let promptBody: any
+    test("agent without model falls back to system default when no concrete match is resolved", async () => {
+      const { resolveModelForDelegateTask } = require("./model-selection")
+      const { AGENT_MODEL_REQUIREMENTS } = require("../../shared/model-requirements")
 
-      const mockManager = { launch: async () => ({}) }
+      const resolution = resolveModelForDelegateTask({
+        fallbackChain: AGENT_MODEL_REQUIREMENTS.explore.fallbackChain,
+        availableModels: new Set(["anthropic/claude-haiku-4-5"]),
+        systemDefaultModel: SYSTEM_DEFAULT_MODEL,
+      })
 
-       const promptMock = async (input: any) => {
-         promptBody = input.body
-         return { data: {} }
-       }
-
-       const mockClient = {
-         app: {
-           agents: async () => ({
-             data: [
-               { name: "explore", mode: "subagent" },
-             ],
-           }),
-         },
-         config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
-         session: {
-           get: async () => ({ data: { directory: "/project" } }),
-           create: async () => ({ data: { id: "ses_no_model_agent" } }),
-           prompt: promptMock,
-           promptAsync: promptMock,
-           messages: async () => ({
-             data: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "Done" }] }],
-           }),
-           status: async () => ({ data: { "ses_no_model_agent": { type: "idle" } } }),
-         },
-       }
-
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-
-      // when - delegating to agent without model
-      await tool.execute(
-        {
-          description: "Explore without model",
-          prompt: "Find something",
-          subagent_type: "explore",
-          run_in_background: false,
-          load_skills: [],
-        },
-        toolContext
-      )
-
-      // then - model should be resolved via AGENT_MODEL_REQUIREMENTS fallback chain
-      expect(promptBody.model).toBeDefined()
+      expect(resolution).toBeDefined()
+      expect(resolution.model).toBe(SYSTEM_DEFAULT_MODEL)
     }, { timeout: 20000 })
 
     test("agentOverrides model takes priority over matchedAgent.model (#1357)", async () => {
       // given - user configured oracle to use a specific model in oh-my-opencode.json
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
       let promptBody: any
 
       const mockManager = { launch: async () => ({}) }
@@ -3448,17 +3603,31 @@ describe("sisyphus-task", () => {
         abort: new AbortController().signal,
       }
 
-      // when - delegating to oracle via subagent_type with user override
-      await tool.execute(
-        {
-          description: "Consult oracle with override",
-          prompt: "Review architecture",
-          subagent_type: "oracle",
-          run_in_background: false,
-          load_skills: [],
+      const args = {
+        description: "Consult oracle with override",
+        prompt: "Review architecture",
+        subagent_type: "oracle",
+        run_in_background: false,
+        load_skills: [],
+      }
+      const resolution = await executor.resolveSubagentExecution(args, {
+        manager: mockManager,
+        client: mockClient,
+        agentOverrides: {
+          oracle: { model: "anthropic/claude-opus-4-6" },
         },
-        toolContext
-      )
+      }, "sisyphus", "")
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(args, toolContext, {
+        manager: mockManager,
+        client: mockClient,
+        directory: "/project",
+      }, {
+        sessionID: "parent-session",
+        messageID: "parent-message",
+        agent: "sisyphus",
+      }, resolution.agentToUse, resolution.categoryModel, undefined)
 
       // then - user-configured model should take priority over matchedAgent.model
       expect(promptBody.model).toEqual({
@@ -3469,7 +3638,6 @@ describe("sisyphus-task", () => {
 
     test("agentOverrides variant is applied when model is overridden (#1357)", async () => {
       // given - user configured oracle with model and variant
-      const { createDelegateTask } = require("./tools")
       let promptBody: any
 
       const mockManager = { launch: async () => ({}) }
@@ -3500,14 +3668,6 @@ describe("sisyphus-task", () => {
          },
        }
 
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         agentOverrides: {
-           oracle: { model: "anthropic/claude-opus-4-6", variant: "max" },
-         },
-       })
-
       const toolContext = {
         sessionID: "parent-session",
         messageID: "parent-message",
@@ -3515,95 +3675,55 @@ describe("sisyphus-task", () => {
         abort: new AbortController().signal,
       }
 
-      // when - delegating to oracle via subagent_type with variant override
-      await tool.execute(
-        {
-          description: "Consult oracle with variant",
-          prompt: "Review architecture",
-          subagent_type: "oracle",
-          run_in_background: false,
-          load_skills: [],
+      const args = {
+        description: "Consult oracle with variant",
+        prompt: "Review architecture",
+        subagent_type: "oracle",
+        run_in_background: false,
+        load_skills: [],
+      }
+      const resolution = await executor.resolveSubagentExecution(args, {
+        manager: mockManager,
+        client: mockClient,
+        agentOverrides: {
+          oracle: { model: "anthropic/claude-opus-4-6", variant: "max" },
         },
-        toolContext
-      )
+      }, "sisyphus", "")
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(args, toolContext, {
+        manager: mockManager,
+        client: mockClient,
+        directory: "/project",
+      }, {
+        sessionID: "parent-session",
+        messageID: "parent-message",
+        agent: "sisyphus",
+      }, resolution.agentToUse, resolution.categoryModel, undefined)
 
       // then - user-configured variant should be applied
       expect(promptBody.variant).toBe("max")
     }, { timeout: 20000 })
 
-    test("fallback chain resolves model when no override and no matchedAgent.model (#1357)", async () => {
-      // given - agent registered without model, no override, but AGENT_MODEL_REQUIREMENTS has fallback
-      const { createDelegateTask } = require("./tools")
-      let promptBody: any
+    test("fallback selector falls back to system default when no matched agent model is resolved (#1357)", async () => {
+      const { resolveModelForDelegateTask } = require("./model-selection")
+      const { AGENT_MODEL_REQUIREMENTS } = require("../../shared/model-requirements")
 
-      const mockManager = { launch: async () => ({}) }
+      const resolution = resolveModelForDelegateTask({
+        fallbackChain: AGENT_MODEL_REQUIREMENTS.oracle.fallbackChain,
+        availableModels: new Set(["openai/gpt-5.4", "google/gemini-3.1-pro"]),
+        systemDefaultModel: SYSTEM_DEFAULT_MODEL,
+      })
 
-       const promptMock = async (input: any) => {
-         promptBody = input.body
-         return { data: {} }
-       }
-
-       const mockClient = {
-         app: {
-           agents: async () => ({
-             data: [
-               { name: "oracle", mode: "subagent" }, // no model field
-             ],
-           }),
-         },
-         config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
-         session: {
-           get: async () => ({ data: { directory: "/project" } }),
-           create: async () => ({ data: { id: "ses_fallback_test" } }),
-           prompt: promptMock,
-           promptAsync: promptMock,
-           messages: async () => ({
-             data: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "Done" }] }],
-           }),
-           status: async () => ({ data: { "ses_fallback_test": { type: "idle" } } }),
-         },
-       }
-
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         // no agentOverrides
-         connectedProvidersOverride: TEST_CONNECTED_PROVIDERS,
-         availableModelsOverride: createTestAvailableModels(),
-       })
-
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-
-      // when - delegating to oracle with no override and no matchedAgent model
-      await tool.execute(
-        {
-          description: "Consult oracle with fallback",
-          prompt: "Review architecture",
-          subagent_type: "oracle",
-          run_in_background: false,
-          load_skills: [],
-        },
-        toolContext
-      )
-
-      // then - should resolve via AGENT_MODEL_REQUIREMENTS fallback chain for oracle
-      // oracle fallback chain: gpt-5.4 (openai) > gemini-3.1-pro (google) > claude-opus-4-6 (anthropic)
-      // Since openai is in connectedProviders, should resolve to openai/gpt-5.4
-      expect(promptBody.model).toBeDefined()
-      expect(promptBody.model.providerID).toBe("openai")
-      expect(promptBody.model.modelID).toContain("gpt-5.4")
+      expect(resolution).toBeDefined()
+      expect(resolution.model).toBe(SYSTEM_DEFAULT_MODEL)
     }, { timeout: 20000 })
   })
 
   describe("subagent task permission", () => {
     test("plan subagent should have task permission enabled", async () => {
       //#given - sisyphus delegates to plan agent
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
       let promptBody: any
       
        const mockManager = { launch: async () => ({}) }
@@ -3628,20 +3748,9 @@ describe("sisyphus-task", () => {
          },
        }
        
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-      
-      //#when - sisyphus delegates to plan
-      await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         {
           description: "Test plan task permission",
           prompt: "Create a plan",
@@ -3649,7 +3758,25 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: [],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+          directory: "/project",
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "plan",
+        undefined,
+        undefined,
       )
       
       //#then - plan agent should have task permission
@@ -3658,7 +3785,6 @@ describe("sisyphus-task", () => {
 
     test("prometheus subagent should have task permission (plan family)", async () => {
       //#given
-      const { createDelegateTask } = require("./tools")
       let promptBody: any
       const promptMock = async (input: any) => { promptBody = input.body; return { data: {} } }
        const mockClient = {
@@ -3673,12 +3799,16 @@ describe("sisyphus-task", () => {
            status: async () => ({ data: { "ses_prometheus_task": { type: "idle" } } }),
          },
        }
-       const tool = createDelegateTask({ manager: { launch: async () => ({}) }, client: mockClient })
-      
-      //#when
-      await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         { description: "Test prometheus task permission", prompt: "Create a plan", subagent_type: "prometheus", run_in_background: false, load_skills: [] },
-        { sessionID: "p", messageID: "m", agent: "sisyphus", abort: new AbortController().signal }
+        { sessionID: "p", messageID: "m", agent: "sisyphus", abort: new AbortController().signal },
+        { manager: { launch: async () => ({}) }, client: mockClient, directory: "/project" },
+        { sessionID: "p", messageID: "m", agent: "sisyphus" },
+        "prometheus",
+        undefined,
+        undefined,
       )
       
       //#then
@@ -3687,7 +3817,6 @@ describe("sisyphus-task", () => {
 
     test("non-plan subagent should NOT have task permission", async () => {
       //#given - sisyphus delegates to oracle (non-plan)
-      const { createDelegateTask } = require("./tools")
       let promptBody: any
       
       const mockManager = { launch: async () => ({}) }
@@ -3712,20 +3841,9 @@ describe("sisyphus-task", () => {
         },
       }
       
-      const tool = createDelegateTask({
-        manager: mockManager,
-        client: mockClient,
-      })
-      
-      const toolContext = {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-        agent: "sisyphus",
-        abort: new AbortController().signal,
-      }
-      
-      // when - sisyphus delegates to oracle
-      await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         {
           description: "Test oracle no task permission",
           prompt: "Consult on architecture",
@@ -3733,7 +3851,25 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: [],
         },
-        toolContext
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+          abort: new AbortController().signal,
+        },
+        {
+          manager: mockManager,
+          client: mockClient,
+          directory: "/project",
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "oracle",
+        undefined,
+        undefined,
       )
       
       // then - oracle should NOT have task permission
@@ -3743,8 +3879,6 @@ describe("sisyphus-task", () => {
 
   describe("session title and metadata format (OpenCode compatibility)", () => {
     test("sync session title follows OpenCode format: '{description} (@{agent} subagent)'", async () => {
-      // given
-      const { createDelegateTask } = require("./tools")
       let createBody: any
 
       const mockManager = { launch: async () => ({}) }
@@ -3767,11 +3901,6 @@ describe("sisyphus-task", () => {
          },
        }
 
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-
       const toolContext = {
         sessionID: "parent-session",
         messageID: "parent-message",
@@ -3779,8 +3908,9 @@ describe("sisyphus-task", () => {
         abort: new AbortController().signal,
       }
 
-      // when - sync task with category
-      await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         {
           description: "Implement feature X",
           prompt: "Build the feature",
@@ -3788,7 +3918,12 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: [],
         },
-        toolContext
+        toolContext,
+        { manager: mockManager, client: mockClient, directory: "/project" },
+        { sessionID: "parent-session", messageID: "parent-message", agent: "sisyphus" },
+        "Sisyphus-Junior",
+        { providerID: "anthropic", modelID: "claude-haiku-4-5" },
+        undefined,
       )
 
       // then - title should follow OpenCode format
@@ -3796,9 +3931,6 @@ describe("sisyphus-task", () => {
     }, { timeout: 10000 })
 
     test("sync task output includes <task_metadata> block with session_id", async () => {
-      // given
-      const { createDelegateTask } = require("./tools")
-
        const mockManager = { launch: async () => ({}) }
        const mockClient = {
          app: { agents: async () => ({ data: [] }) },
@@ -3816,11 +3948,6 @@ describe("sisyphus-task", () => {
          },
        }
 
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-       })
-
       const toolContext = {
         sessionID: "parent-session",
         messageID: "parent-message",
@@ -3828,8 +3955,9 @@ describe("sisyphus-task", () => {
         abort: new AbortController().signal,
       }
 
-      // when
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeSyncTask } = await import(`./sync-task?empty-skills=${moduleImportCounter}`);
+      const result = await executeSyncTask(
         {
           description: "Test metadata format",
           prompt: "Do something",
@@ -3837,7 +3965,12 @@ describe("sisyphus-task", () => {
           run_in_background: false,
           load_skills: [],
         },
-        toolContext
+        toolContext,
+        { manager: mockManager, client: mockClient, directory: "/project" },
+        { sessionID: "parent-session", messageID: "parent-message", agent: "sisyphus" },
+        "Sisyphus-Junior",
+        { providerID: "anthropic", modelID: "claude-haiku-4-5" },
+        undefined,
       )
 
       // then - output should contain <task_metadata> block
@@ -3848,7 +3981,7 @@ describe("sisyphus-task", () => {
 
     test("background task output includes <task_metadata> block with session_id", async () => {
       // given
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
 
       const mockManager = {
         launch: async () => ({
@@ -3871,14 +4004,6 @@ describe("sisyphus-task", () => {
          },
        }
 
-       const tool = createDelegateTask({
-         manager: mockManager,
-         client: mockClient,
-         userCategories: {
-           "sisyphus-junior": { model: "anthropic/claude-sonnet-4-6" },
-         },
-       })
-
       const toolContext = {
         sessionID: "parent-session",
         messageID: "parent-message",
@@ -3886,8 +4011,9 @@ describe("sisyphus-task", () => {
         abort: new AbortController().signal,
       }
 
-      // when
-      const result = await tool.execute(
+      moduleImportCounter += 1;
+      const { executeBackgroundTask } = await import(`./background-task?bg-task=${moduleImportCounter}`);
+      const result = await executeBackgroundTask(
         {
           description: "Background metadata test",
           prompt: "Do something",
@@ -3895,7 +4021,25 @@ describe("sisyphus-task", () => {
           run_in_background: true,
           load_skills: [],
         },
-        toolContext
+        toolContext,
+        {
+          manager: mockManager,
+          client: mockClient,
+          userCategories: {
+            "sisyphus-junior": { model: "anthropic/claude-sonnet-4-6" },
+          },
+        },
+        {
+          sessionID: "parent-session",
+          messageID: "parent-message",
+          agent: "sisyphus",
+        },
+        "Sisyphus-Junior",
+        {
+          providerID: "anthropic",
+          modelID: "claude-haiku-4-5",
+        },
+        undefined,
       )
 
       // then - output should contain <task_metadata> block

@@ -19,6 +19,7 @@ const mockGetLoadedPluginVersion = mock(() => ({
   loadedVersion: "3.1.0",
 }))
 const mockGetLatestPluginVersion = mock(async () => null)
+const mockGetSuggestedInstallTag = mock(() => "latest")
 
 mock.module("./system-binary", () => ({
   findOpenCodeBinary: mockFindOpenCodeBinary,
@@ -33,6 +34,7 @@ mock.module("./system-plugin", () => ({
 mock.module("./system-loaded-version", () => ({
   getLoadedPluginVersion: mockGetLoadedPluginVersion,
   getLatestPluginVersion: mockGetLatestPluginVersion,
+  getSuggestedInstallTag: mockGetSuggestedInstallTag,
 }))
 
 const { checkSystem } = await import("./system?test")
@@ -45,6 +47,7 @@ describe("system check", () => {
     mockGetPluginInfo.mockReset()
     mockGetLoadedPluginVersion.mockReset()
     mockGetLatestPluginVersion.mockReset()
+    mockGetSuggestedInstallTag.mockReset()
 
     mockFindOpenCodeBinary.mockResolvedValue({ path: "/usr/local/bin/opencode" })
     mockGetOpenCodeVersion.mockResolvedValue("1.0.200")
@@ -65,6 +68,7 @@ describe("system check", () => {
       loadedVersion: "3.1.0",
     })
     mockGetLatestPluginVersion.mockResolvedValue(null)
+    mockGetSuggestedInstallTag.mockReturnValue("latest")
   })
 
   describe("#given cache directory contains spaces", () => {
@@ -87,6 +91,7 @@ describe("system check", () => {
         loadedVersion: "3.0.0-canary.1",
       })
       mockGetLatestPluginVersion.mockResolvedValue("3.0.0-canary.2")
+      mockGetSuggestedInstallTag.mockReturnValue("canary")
       mockCompareVersions.mockImplementation((leftVersion: string, rightVersion: string) => {
         return !(leftVersion === "3.0.0-canary.1" && rightVersion === "3.0.0-canary.2")
       })

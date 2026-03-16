@@ -1,11 +1,11 @@
 const { describe, expect, mock, test } = require("bun:test")
-
+const realShared = await import("../../shared/index?test=1")
 mock.module("../../shared", () => ({
+  ...realShared,
   getMessageDir: () => null,
   isSqliteBackend: () => true,
   normalizeSDKResponse: <TData>(response: { data?: TData }, fallback: TData): TData => response.data ?? fallback,
 }))
-
 const { getLastAgentFromSession } = await import("./session-last-agent")
 
 function createMockClient(messages: Array<{ info?: { agent?: string } }>) {

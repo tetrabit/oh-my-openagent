@@ -1,34 +1,67 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 const promptAsyncMock = mock(async (_input: unknown) => undefined);
 const showToastMock = mock(async () => undefined);
+let moduleImportCounter = 0;
+let createContextWindowFallbackHook: typeof import("./index").createContextWindowFallbackHook;
+let sessionState: typeof import("../../features/claude-code-session-state");
 
-mock.module("../../features/claude-code-session-state", () => ({
-  getSessionAgent: () => "sisyphus",
-}));
+async function restoreActualContextWindowFallbackDependencies(): Promise<void> {
+  moduleImportCounter += 1;
+  const modelAvailabilityModule = await import(
+    `../../shared/model-availability?restore=${moduleImportCounter}`
+  );
+  const modelResolverModule = await import(
+    `../../shared/model-resolver?restore=${moduleImportCounter}`
+  );
 
-mock.module("../../shared/model-availability", () => ({
-  fetchAvailableModels: async () =>
-    new Set<string>(["anthropic/claude-opus-4-6", "openai/gpt-5.2"]),
-}));
+  mock.restore();
+  mock.module("../../shared/model-availability", () => modelAvailabilityModule);
+  mock.module("../../shared/model-resolver", () => modelResolverModule);
+}
 
-mock.module("../../shared/model-resolver", () => ({
-  resolveRuntimeFallback: () => ({
-    model: "openai/gpt-5.2",
-    source: "runtime-fallback",
-  }),
-}));
+async function prepareContextWindowFallbackModule(): Promise<void> {
+  mock.restore();
+  sessionState = await import(`../../features/claude-code-session-state/index?test=${moduleImportCounter + 1}`);
+
+  const realModelAvailability = await import(`../../shared/model-availability?test=${moduleImportCounter + 1}`);
+  mock.module("../../shared/model-availability", () => ({
+    ...realModelAvailability,
+    fetchAvailableModels: async () =>
+      new Set<string>(["anthropic/claude-opus-4-6", "openai/gpt-5.2"]),
+    fuzzyMatchModel: () => "openai/gpt-5.2",
+  }));
+
+  const realModelResolver = await import(`../../shared/model-resolver?test=${moduleImportCounter + 1}`);
+  mock.module("../../shared/model-resolver", () => ({
+    ...realModelResolver,
+    resolveRuntimeFallback: () => ({
+      model: "openai/gpt-5.2",
+      source: "runtime-fallback",
+    }),
+    normalizeFallbackModels: (models: string | string[] | undefined) =>
+      typeof models === "string" ? [models] : models,
+  }));
+
+  moduleImportCounter += 1;
+  ({ createContextWindowFallbackHook } = await import(`./index?test=${moduleImportCounter}`));
+}
 
 describe("context-window-fallback integration", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     promptAsyncMock.mockClear();
     showToastMock.mockClear();
+    sessionState?._resetForTesting();
+    await prepareContextWindowFallbackModule();
+  });
+
+  afterEach(async () => {
+    sessionState?._resetForTesting();
+    await restoreActualContextWindowFallbackDependencies();
   });
 
   test("switches model and calls promptAsync on session.error rate-limit event", async () => {
     // #given
-    const { createContextWindowFallbackHook } = await import("./index");
-
     const ctx = {
       directory: "/tmp/project",
       client: {
@@ -62,6 +95,7 @@ describe("context-window-fallback integration", () => {
         },
       },
     };
+    sessionState.updateSessionAgent("session-rate-limit-1", "sisyphus");
 
     // #when
     const handled = await hook.event(eventInput);
@@ -86,8 +120,6 @@ describe("context-window-fallback integration", () => {
 
   test("switches model and calls promptAsync on session.error context-overflow event", async () => {
     // #given
-    const { createContextWindowFallbackHook } = await import("./index");
-
     const ctx = {
       directory: "/tmp/project",
       client: {
@@ -121,6 +153,7 @@ describe("context-window-fallback integration", () => {
         },
       },
     };
+    sessionState.updateSessionAgent("session-context-overflow-1", "sisyphus");
 
     // #when
     const handled = await hook.event(eventInput);

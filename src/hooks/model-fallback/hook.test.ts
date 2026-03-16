@@ -1,5 +1,5 @@
 declare const require: (name: string) => any
-const { beforeEach, describe, expect, mock, test } = require("bun:test")
+const { afterEach, beforeEach, describe, expect, mock, test } = require("bun:test")
 
 const readConnectedProvidersCacheMock = mock(() => null)
 const readProviderModelsCacheMock = mock(() => null)
@@ -21,25 +21,52 @@ const transformModelForProviderMock = mock((provider: string, model: string) => 
   }
   return model
 })
+let moduleImportCounter = 0
+let clearPendingModelFallback: typeof import("./hook").clearPendingModelFallback
+let createModelFallbackHook: typeof import("./hook").createModelFallbackHook
+let setSessionFallbackChain: typeof import("./hook").setSessionFallbackChain
+let setPendingModelFallback: typeof import("./hook").setPendingModelFallback
 
-mock.module("../../shared/connected-providers-cache", () => ({
-  readConnectedProvidersCache: readConnectedProvidersCacheMock,
-  readProviderModelsCache: readProviderModelsCacheMock,
-}))
+async function restoreActualModelFallbackDependencies(): Promise<void> {
+  moduleImportCounter += 1
+  const connectedProvidersCacheModule = await import(
+    `../../shared/connected-providers-cache?restore=${moduleImportCounter}`
+  )
+  const providerModelTransformModule = await import(
+    `../../shared/provider-model-id-transform?restore=${moduleImportCounter}`
+  )
 
-mock.module("../../shared/provider-model-id-transform", () => ({
-  transformModelForProvider: transformModelForProviderMock,
-}))
+  mock.restore()
+  mock.module("../../shared/connected-providers-cache", () => connectedProvidersCacheModule)
+  mock.module("../../shared/provider-model-id-transform", () => providerModelTransformModule)
+}
 
-import {
-  clearPendingModelFallback,
-  createModelFallbackHook,
-  setSessionFallbackChain,
-  setPendingModelFallback,
-} from "./hook"
+async function prepareModelFallbackHookTestModule(): Promise<void> {
+  mock.restore()
+  moduleImportCounter += 1
+  const realConnectedProvidersCache = await import(`../../shared/connected-providers-cache?real=${moduleImportCounter}`)
+  const realProviderModelTransform = await import(`../../shared/provider-model-id-transform?real=${moduleImportCounter}`)
+  mock.module("../../shared/connected-providers-cache", () => ({
+    ...realConnectedProvidersCache,
+    readConnectedProvidersCache: readConnectedProvidersCacheMock,
+    readProviderModelsCache: readProviderModelsCacheMock,
+  }))
+  mock.module("../../shared/provider-model-id-transform", () => ({
+    ...realProviderModelTransform,
+    transformModelForProvider: transformModelForProviderMock,
+  }))
+  moduleImportCounter += 1
+  ;({
+    clearPendingModelFallback,
+    createModelFallbackHook,
+    setSessionFallbackChain,
+    setPendingModelFallback,
+  } = await import(`./hook?test=${moduleImportCounter}`))
+}
 
 describe("model fallback hook", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await prepareModelFallbackHookTestModule()
     readConnectedProvidersCacheMock.mockReturnValue(null)
     readProviderModelsCacheMock.mockReturnValue(null)
     readConnectedProvidersCacheMock.mockClear()
@@ -48,6 +75,10 @@ describe("model fallback hook", () => {
     clearPendingModelFallback("ses_model_fallback_main")
     clearPendingModelFallback("ses_model_fallback_ghcp")
     clearPendingModelFallback("ses_model_fallback_google")
+  })
+
+  afterEach(async () => {
+    await restoreActualModelFallbackDependencies()
   })
 
   test("applies pending fallback on chat.message by overriding model", async () => {

@@ -40,3 +40,10 @@ oauth-success.html
 # Local backup archives
 .git-backups/
 *.bun-build
+.sidecar/
+.sidecar-agent
+.sidecar-task
+.sidecar-pr
+.sidecar-start.sh
+.sidecar-base
+.td-root

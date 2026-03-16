@@ -26,14 +26,23 @@ function createPluginInput(agentData: Array<Record<string, unknown>>): PluginInp
 }
 
 describe("resolveMultimodalLookerAgentMetadata", () => {
-  beforeEach(() => {
+  let freshConnectedProvidersCache: typeof connectedProvidersCache
+  let freshModelAvailability: typeof modelAvailability
+  beforeEach(async () => {
+    mock.restore()
+    // Re-import modules fresh to bypass any previous contamination
+    freshConnectedProvidersCache = await import("../../shared/connected-providers-cache")
+    freshModelAvailability = await import("../../shared/model-availability")
+    mock.module("../../shared/connected-providers-cache", () => freshConnectedProvidersCache)
+    mock.module("../../shared/model-availability", () => freshModelAvailability)
     clearVisionCapableModelsCache()
   })
 
   afterEach(() => {
+    ;(freshModelAvailability?.fetchAvailableModels as unknown as { mockRestore?: () => void })?.mockRestore?.()
+    ;(freshConnectedProvidersCache?.readConnectedProvidersCache as unknown as { mockRestore?: () => void })?.mockRestore?.()
     clearVisionCapableModelsCache()
-    ;(modelAvailability.fetchAvailableModels as unknown as { mockRestore?: () => void }).mockRestore?.()
-    ;(connectedProvidersCache.readConnectedProvidersCache as unknown as { mockRestore?: () => void }).mockRestore?.()
+    mock.restore()
   })
 
   test("returns configured multimodal-looker model when it already matches a vision-capable override", async () => {

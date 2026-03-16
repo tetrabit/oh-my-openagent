@@ -1,8 +1,16 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
 import type { HookDeps, RuntimeFallbackPluginInput } from "./types"
 import type { AutoRetryHelpers } from "./auto-retry"
 import { createFallbackState } from "./fallback-state"
-import { createEventHandler } from "./event-handler"
+
+let moduleImportCounter = 0
+let createEventHandler: typeof import("./event-handler").createEventHandler
+
+async function prepareEventHandlerTestModule(): Promise<void> {
+  mock.restore()
+  moduleImportCounter += 1
+  ;({ createEventHandler } = await import(`./event-handler?test=${moduleImportCounter}`))
+}
 
 function createContext(): RuntimeFallbackPluginInput {
   return {
@@ -59,6 +67,14 @@ function createHelpers(deps: HookDeps, abortCalls: string[], clearCalls: string[
 }
 
 describe("createEventHandler", () => {
+  beforeEach(async () => {
+    await prepareEventHandlerTestModule()
+  })
+
+  afterEach(() => {
+    mock.restore()
+  })
+
   it("#given a session retry dedupe key #when session.stop fires #then the retry dedupe key is cleared", async () => {
     // given
     const sessionID = "session-stop"

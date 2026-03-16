@@ -6,10 +6,10 @@ const mockExecuteHookCommand = mock(() =>
   Promise.resolve({ exitCode: 0, stdout: "", stderr: "" })
 )
 
+const realCommandExecutor = await import("../../shared/command-executor")
 mock.module("../../shared/command-executor", () => ({
+  ...realCommandExecutor,
   executeHookCommand: mockExecuteHookCommand,
-  executeCommand: mock(),
-  resolveCommandsInText: mock(),
 }))
 
 mock.module("../../shared/logger", () => ({
@@ -32,6 +32,7 @@ function createConfig(stopHooks: ClaudeHooksConfig["Stop"]): ClaudeHooksConfig {
 }
 
 describe("executeStopHooks", () => {
+
   beforeEach(() => {
     mockExecuteHookCommand.mockReset()
     mockExecuteHookCommand.mockImplementation(() =>

@@ -30,7 +30,8 @@
     "postinstall": "node postinstall.mjs",
     "prepublishOnly": "bun run clean && bun run build",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun run script/run-tests.ts",
+    "test:raw": "bun test"
   },
   "keywords": [
     "opencode",

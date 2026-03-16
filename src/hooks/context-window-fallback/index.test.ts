@@ -1,7 +1,25 @@
-import { describe, expect, it } from "bun:test";
-import { detectFallbackReason } from "./index";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
+
+let moduleImportCounter = 0;
+let detectFallbackReason: typeof import("./index").detectFallbackReason;
+
+async function prepareContextWindowFallbackIndexModule(): Promise<void> {
+  mock.restore();
+  moduleImportCounter += 1;
+  const parserModule = await import(
+    `../anthropic-context-window-limit-recovery/parser?test=${moduleImportCounter}`
+  );
+  mock.module("../anthropic-context-window-limit-recovery", () => ({
+    parseAnthropicTokenLimitError: parserModule.parseAnthropicTokenLimitError,
+  }));
+  ({ detectFallbackReason } = await import(`./index?test=${moduleImportCounter}`));
+}
 
 describe("context-window-fallback detectFallbackReason", () => {
+  beforeEach(async () => {
+    await prepareContextWindowFallbackIndexModule();
+  });
+
   it("detects context overflow errors", () => {
     // #given
     const error = {

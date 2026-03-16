@@ -38,17 +38,25 @@ class MockStdioClientTransport {
     createdTransports.push(this)
   }
 }
+let moduleImportCounter = 0
+let disconnectAll: typeof import("./cleanup").disconnectAll
+let disconnectSession: typeof import("./cleanup").disconnectSession
+let getOrCreateClient: typeof import("./connection").getOrCreateClient
 
-mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
-  Client: MockClient,
-}))
+async function prepareConnectionRaceTestModules(): Promise<void> {
+  mock.restore()
+  mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
+    Client: MockClient,
+  }))
 
-mock.module("@modelcontextprotocol/sdk/client/stdio.js", () => ({
-  StdioClientTransport: MockStdioClientTransport,
-}))
+  mock.module("@modelcontextprotocol/sdk/client/stdio.js", () => ({
+    StdioClientTransport: MockStdioClientTransport,
+  }))
 
-const { disconnectAll, disconnectSession } = await import("./cleanup")
-const { getOrCreateClient } = await import("./connection")
+  moduleImportCounter += 1
+  ;({ disconnectAll, disconnectSession } = await import(`./cleanup?test=${moduleImportCounter}`))
+  ;({ getOrCreateClient } = await import(`./connection?test=${moduleImportCounter}`))
+}
 
 function createDeferred<TValue>(): Deferred<TValue> {
   let resolvePromise: ((value: TValue) => void) | null = null
@@ -119,9 +127,14 @@ afterEach(async () => {
   pendingConnects.length = 0
   createdClients.length = 0
   createdTransports.length = 0
+  mock.restore()
 })
 
 describe("getOrCreateClient disconnect race", () => {
+  beforeEach(async () => {
+    await prepareConnectionRaceTestModules()
+  })
+
   it("#given pending connection for session A #when disconnectSession(A) is called before connection completes #then completed client is not added to state.clients", async () => {
     const state = createState()
     const info = createClientInfo("session-a")

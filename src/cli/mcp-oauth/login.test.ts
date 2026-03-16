@@ -2,24 +2,39 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test"
 
 const mockLogin = mock(() => Promise.resolve({ accessToken: "test-token", expiresAt: 1710000000 }))
 
-mock.module("../../features/mcp-oauth/provider", () => ({
-  McpOAuthProvider: class MockMcpOAuthProvider {
-    constructor(public options: { serverUrl: string; clientId?: string; scopes?: string[] }) {}
-    async login() {
-      return mockLogin()
-    }
-  },
-}))
+let moduleImportCounter = 0
+let login: typeof import("./login").login
 
-const { login } = await import("./login")
+async function restoreActualProviderModule(): Promise<void> {
+  moduleImportCounter += 1
+  const providerModule = await import(`../../features/mcp-oauth/provider?restore=${moduleImportCounter}`)
+  mock.restore()
+  mock.module("../../features/mcp-oauth/provider", () => providerModule)
+}
+
+async function prepareLoginTestModule(): Promise<void> {
+  mock.restore()
+  mock.module("../../features/mcp-oauth/provider", () => ({
+    McpOAuthProvider: class MockMcpOAuthProvider {
+      constructor(public options: { serverUrl: string; clientId?: string; scopes?: string[] }) {}
+      async login() {
+        return mockLogin()
+      }
+    },
+  }))
+
+  moduleImportCounter += 1
+  ;({ login } = await import(`./login?test=${moduleImportCounter}`))
+}
 
 describe("login command", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mockLogin.mockClear()
+    await prepareLoginTestModule()
   })
 
-  afterEach(() => {
-    // cleanup
+  afterEach(async () => {
+    await restoreActualProviderModule()
   })
 
   it("returns error code when server-url is not provided", async () => {

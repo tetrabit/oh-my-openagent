@@ -1,18 +1,37 @@
 declare const require: (name: string) => any
-const { describe, expect, test, beforeEach, mock } = require("bun:test")
+const { afterEach, describe, expect, test, beforeEach, mock } = require("bun:test")
 
 const readConnectedProvidersCacheMock = mock(() => null)
+let moduleImportCounter = 0
+let shouldRetryError: typeof import("./model-error-classifier").shouldRetryError
+let selectFallbackProvider: typeof import("./model-error-classifier").selectFallbackProvider
 
-mock.module("./connected-providers-cache", () => ({
-  readConnectedProvidersCache: readConnectedProvidersCacheMock,
-}))
+async function restoreActualConnectedProvidersCacheModule(): Promise<void> {
+  moduleImportCounter += 1
+  const connectedProvidersCacheModule = await import(`./connected-providers-cache?restore=${moduleImportCounter}`)
+  mock.restore()
+  mock.module("./connected-providers-cache", () => connectedProvidersCacheModule)
+}
 
-import { shouldRetryError, selectFallbackProvider } from "./model-error-classifier"
+async function prepareModelErrorClassifierTestModule(): Promise<void> {
+  mock.restore()
+  mock.module("./connected-providers-cache", () => ({
+    readConnectedProvidersCache: readConnectedProvidersCacheMock,
+  }))
+
+  moduleImportCounter += 1
+  ;({ shouldRetryError, selectFallbackProvider } = await import(`./model-error-classifier?test=${moduleImportCounter}`))
+}
 
 describe("model-error-classifier", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await prepareModelErrorClassifierTestModule()
     readConnectedProvidersCacheMock.mockReturnValue(null)
     readConnectedProvidersCacheMock.mockClear()
+  })
+
+  afterEach(async () => {
+    await restoreActualConnectedProvidersCacheModule()
   })
 
   test("treats overloaded retry messages as retryable", () => {
