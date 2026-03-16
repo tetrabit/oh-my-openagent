@@ -148,9 +148,13 @@ PLATFORM_TRIPLET="$(detect_platform_triplet)"
 OPENCODE_BIN_SRC="$OPENCODE_DIR/dist/opencode-$PLATFORM_TRIPLET/bin/opencode"
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
+  log "Installing opencode dependencies"
+  (cd "$OPENCODE_DIR" && bun install)
   log "Building opencode binary"
   (cd "$OPENCODE_DIR" && bun run script/build.ts --single --skip-install)
 
+  log "Installing oh-my-opencode dependencies"
+  (cd "$PLUGIN_DIR" && bun install)
   log "Building oh-my-opencode dist and binaries"
   (cd "$PLUGIN_DIR" && bun run build:all)
 fi
