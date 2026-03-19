@@ -6,6 +6,7 @@ import type { BackgroundTask, ResumeInput } from "./types"
 import { MIN_IDLE_TIME_MS } from "./constants"
 import { BackgroundManager } from "./manager"
 import { ConcurrencyManager } from "./concurrency"
+import { _resetForTesting as resetProcessCleanupForTesting } from "./process-cleanup"
 import { initTaskToastManager, _resetTaskToastManagerForTesting } from "../task-toast-manager/manager"
 
 
@@ -1705,24 +1706,30 @@ describe("BackgroundManager.resume model persistence", () => {
 
 describe("BackgroundManager process cleanup", () => {
   test("should remove listeners after last shutdown", () => {
-    // given
-    const signals = getCleanupSignals()
-    const baseline = getListenerCounts(signals)
-    const managerA = createBackgroundManager()
-    const managerB = createBackgroundManager()
+    resetProcessCleanupForTesting()
 
-    // when
-    const afterCreate = getListenerCounts(signals)
-    managerA.shutdown()
-    const afterFirstShutdown = getListenerCounts(signals)
-    managerB.shutdown()
-    const afterSecondShutdown = getListenerCounts(signals)
+    try {
+      // given
+      const signals = getCleanupSignals()
+      const baseline = getListenerCounts(signals)
+      const managerA = createBackgroundManager()
+      const managerB = createBackgroundManager()
 
-    // then
-    for (const signal of signals) {
-      expect(afterCreate[signal]).toBe(baseline[signal] + 1)
-      expect(afterFirstShutdown[signal]).toBe(baseline[signal] + 1)
-      expect(afterSecondShutdown[signal]).toBe(baseline[signal])
+      // when
+      const afterCreate = getListenerCounts(signals)
+      managerA.shutdown()
+      const afterFirstShutdown = getListenerCounts(signals)
+      managerB.shutdown()
+      const afterSecondShutdown = getListenerCounts(signals)
+
+      // then
+      for (const signal of signals) {
+        expect(afterCreate[signal]).toBe(baseline[signal] + 1)
+        expect(afterFirstShutdown[signal]).toBe(baseline[signal] + 1)
+        expect(afterSecondShutdown[signal]).toBe(baseline[signal])
+      }
+    } finally {
+      resetProcessCleanupForTesting()
     }
   })
 })
