@@ -6,8 +6,10 @@ import { Agent } from "../../agent/agent"
 import { Provider } from "../../provider/provider"
 import path from "path"
 import fs from "fs/promises"
+import { Filesystem } from "../../util/filesystem"
 import matter from "gray-matter"
 import { Instance } from "../../project/instance"
+import { bootstrap } from "../bootstrap"
 import { EOL } from "os"
 import type { Argv } from "yargs"
 
@@ -202,8 +204,7 @@ const AgentCreateCommand = cmd({
 
         await fs.mkdir(targetPath, { recursive: true })
 
-        const file = Bun.file(filePath)
-        if (await file.exists()) {
+        if (await Filesystem.exists(filePath)) {
           if (isFullyNonInteractive) {
             console.error(`Error: Agent file already exists: ${filePath}`)
             process.exit(1)
@@ -212,7 +213,7 @@ const AgentCreateCommand = cmd({
           throw new UI.CancelledError()
         }
 
-        await Bun.write(filePath, content)
+        await Filesystem.write(filePath, content)
 
         if (isFullyNonInteractive) {
           console.log(filePath)
@@ -229,22 +230,19 @@ const AgentListCommand = cmd({
   command: "list",
   describe: "list all available agents",
   async handler() {
-    await Instance.provide({
-      directory: process.cwd(),
-      async fn() {
-        const agents = await Agent.list()
-        const sortedAgents = agents.sort((a, b) => {
-          if (a.native !== b.native) {
-            return a.native ? -1 : 1
-          }
-          return a.name.localeCompare(b.name)
-        })
-
-        for (const agent of sortedAgents) {
-          process.stdout.write(`${agent.name} (${agent.mode})` + EOL)
-          process.stdout.write(`  ${JSON.stringify(agent.permission, null, 2)}` + EOL)
+    await bootstrap(process.cwd(), async () => {
+      const agents = await Agent.list()
+      const sortedAgents = agents.sort((a, b) => {
+        if (a.native !== b.native) {
+          return a.native ? -1 : 1
         }
-      },
+        return a.name.localeCompare(b.name)
+      })
+
+      for (const agent of sortedAgents) {
+        process.stdout.write(`${agent.name} (${agent.mode})` + EOL)
+        process.stdout.write(`  ${JSON.stringify(agent.permission, null, 2)}` + EOL)
+      }
     })
   },
 })

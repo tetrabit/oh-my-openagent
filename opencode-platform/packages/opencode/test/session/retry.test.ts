@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import type { NamedError } from "@opencode-ai/util/error"
 import { APICallError } from "ai"
+import { setTimeout as sleep } from "node:timers/promises"
 import { SessionRetry } from "../../src/session/retry"
 import { MessageV2 } from "../../src/session/message-v2"
+import { ProviderID } from "../../src/provider/schema"
+
+const providerID = ProviderID.make("test")
 
 function apiError(headers?: Record<string, string>): MessageV2.APIError {
   return new MessageV2.APIError({
@@ -57,18 +61,12 @@ describe("session.retry.delay", () => {
     expect(SessionRetry.delay(1, error)).toBe(2000)
   })
 
-  test("caps large retry-after values from headers at 30 seconds", () => {
+  test("uses retry-after values even when exceeding 10 minutes with headers", () => {
     const error = apiError({ "retry-after": "50" })
-    expect(SessionRetry.delay(1, error)).toBe(30000)
+    expect(SessionRetry.delay(1, error)).toBe(50000)
 
     const longError = apiError({ "retry-after-ms": "700000" })
-    expect(SessionRetry.delay(1, longError)).toBe(30000)
-  })
-
-  test("caps long retry-after http-date values at 30 seconds", () => {
-    const date = new Date(Date.now() + 180000).toUTCString()
-    const error = apiError({ "retry-after": date })
-    expect(SessionRetry.delay(1, error)).toBe(30000)
+    expect(SessionRetry.delay(1, longError)).toBe(700000)
   })
 
   test("sleep caps delay to max 32-bit signed integer to avoid TimeoutOverflowWarning", async () => {
@@ -93,26 +91,6 @@ describe("session.retry.delay", () => {
 })
 
 describe("session.retry.retryable", () => {
-  test("does not retry account rate-limit exceeded APIError message", () => {
-    const error = new MessageV2.APIError({
-      message: "This request would exceed your account's rate limit. Please try again later.",
-      isRetryable: true,
-    }).toObject() as MessageV2.APIError
-
-    expect(SessionRetry.retryable(error)).toBeUndefined()
-  })
-
-  test("does not retry account rate-limit exceeded json message", () => {
-    const error = wrap(
-      JSON.stringify({
-        type: "error",
-        error: { message: "This request would exceed your account's rate limit. Please try again later." },
-      }),
-    )
-
-    expect(SessionRetry.retryable(error)).toBeUndefined()
-  })
-
   test("maps too_many_requests json messages", () => {
     const error = wrap(JSON.stringify({ type: "error", error: { type: "too_many_requests" } }))
     expect(SessionRetry.retryable(error)).toBe("Too Many Requests")
@@ -138,6 +116,15 @@ describe("session.retry.retryable", () => {
     const error = wrap("not-json")
     expect(SessionRetry.retryable(error)).toBeUndefined()
   })
+
+  test("does not retry context overflow errors", () => {
+    const error = new MessageV2.ContextOverflowError({
+      message: "Input exceeds context window of this model",
+      responseBody: '{"error":{"code":"context_length_exceeded"}}',
+    }).toObject() as ReturnType<NamedError["toObject"]>
+
+    expect(SessionRetry.retryable(error)).toBeUndefined()
+  })
 })
 
 describe("session.message-v2.fromError", () => {
@@ -152,7 +139,7 @@ describe("session.message-v2.fromError", () => {
             new ReadableStream({
               async pull(controller) {
                 controller.enqueue("Hello,")
-                await Bun.sleep(10000)
+                await sleep(10000)
                 controller.enqueue(" World!")
                 controller.close()
               },
@@ -166,7 +153,7 @@ describe("session.message-v2.fromError", () => {
         .then((res) => res.text())
         .catch((e) => e)
 
-      const result = MessageV2.fromError(error, { providerID: "test" })
+      const result = MessageV2.fromError(error, { providerID })
 
       expect(MessageV2.APIError.isInstance(result)).toBe(true)
       expect((result as MessageV2.APIError).data.isRetryable).toBe(true)
@@ -199,7 +186,7 @@ describe("session.message-v2.fromError", () => {
       responseBody: '{"error":"boom"}',
       isRetryable: false,
     })
-    const result = MessageV2.fromError(error, { providerID: "openai" }) as MessageV2.APIError
+    const result = MessageV2.fromError(error, { providerID: ProviderID.make("openai") }) as MessageV2.APIError
     expect(result.data.isRetryable).toBe(true)
   })
 })

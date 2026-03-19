@@ -7,15 +7,6 @@ export namespace SessionRetry {
   export const RETRY_BACKOFF_FACTOR = 2
   export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
   export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
-  const NON_RETRYABLE_RATE_LIMIT_PATTERNS = [/this request would exceed your account.?s rate limit/i]
-
-  function capDelay(ms: number) {
-    return Math.min(ms, RETRY_MAX_DELAY_NO_HEADERS)
-  }
-
-  function shouldSkipRetry(message: string) {
-    return NON_RETRYABLE_RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(message))
-  }
 
   export async function sleep(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -42,7 +33,7 @@ export namespace SessionRetry {
         if (retryAfterMs) {
           const parsedMs = Number.parseFloat(retryAfterMs)
           if (!Number.isNaN(parsedMs)) {
-            return capDelay(parsedMs)
+            return parsedMs
           }
         }
 
@@ -51,16 +42,16 @@ export namespace SessionRetry {
           const parsedSeconds = Number.parseFloat(retryAfter)
           if (!Number.isNaN(parsedSeconds)) {
             // convert seconds to milliseconds
-            return capDelay(Math.ceil(parsedSeconds * 1000))
+            return Math.ceil(parsedSeconds * 1000)
           }
           // Try parsing as HTTP date format
           const parsed = Date.parse(retryAfter) - Date.now()
           if (!Number.isNaN(parsed) && parsed > 0) {
-            return capDelay(Math.ceil(parsed))
+            return Math.ceil(parsed)
           }
         }
 
-        return capDelay(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1))
+        return RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1)
       }
     }
 
@@ -68,9 +59,12 @@ export namespace SessionRetry {
   }
 
   export function retryable(error: ReturnType<NamedError["toObject"]>) {
+    // context overflow errors should not be retried
+    if (MessageV2.ContextOverflowError.isInstance(error)) return undefined
     if (MessageV2.APIError.isInstance(error)) {
       if (!error.data.isRetryable) return undefined
-      if (shouldSkipRetry(error.data.message)) return undefined
+      if (error.data.responseBody?.includes("FreeUsageLimitError"))
+        return `Free usage exceeded, add credits https://opencode.ai/zen`
       return error.data.message.includes("Overloaded") ? "Provider is overloaded" : error.data.message
     }
 
@@ -89,14 +83,6 @@ export namespace SessionRetry {
     try {
       if (!json || typeof json !== "object") return undefined
       const code = typeof json.code === "string" ? json.code : ""
-      const message =
-        typeof json.message === "string"
-          ? json.message
-          : typeof json.error?.message === "string"
-            ? json.error.message
-            : ""
-
-      if (message && shouldSkipRetry(message)) return undefined
 
       if (json.type === "error" && json.error?.type === "too_many_requests") {
         return "Too Many Requests"

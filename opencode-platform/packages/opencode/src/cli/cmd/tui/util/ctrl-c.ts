@@ -1,0 +1,33 @@
+import type { SessionStatus } from "@opencode-ai/sdk/v2"
+
+export type KeyboardEventLike = {
+  ctrl?: boolean
+  name?: string
+}
+
+export type CtrlCAction = "abort-and-arm" | "arm-exit" | "exit" | "pass-through"
+
+export function isCtrlCKeyEvent(evt: KeyboardEventLike | undefined): boolean {
+  return Boolean(evt?.ctrl && evt?.name === "c")
+}
+
+export function getCtrlCAction(input: {
+  armed: boolean
+  runningSessionCount: number
+  promptHasInput: boolean
+}): CtrlCAction {
+  if (input.armed) return "exit"
+  if (input.runningSessionCount > 0) return "abort-and-arm"
+  if (input.promptHasInput) return "pass-through"
+  return "arm-exit"
+}
+
+export function getRunningSessionIDs(
+  statuses: Record<string, SessionStatus | undefined> | undefined,
+): string[] {
+  if (!statuses) return []
+
+  return Object.entries(statuses)
+    .filter(([, status]) => status && status.type !== "idle")
+    .map(([sessionID]) => sessionID)
+}

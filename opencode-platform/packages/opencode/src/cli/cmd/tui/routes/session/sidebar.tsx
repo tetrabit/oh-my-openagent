@@ -94,7 +94,6 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
               <text fg={theme.text}>
                 <b>{session().title}</b>
               </text>
-              <text fg={theme.textMuted}>{props.sessionID}</text>
               <Show when={session().share?.url}>
                 <text fg={theme.textMuted}>{session().share!.url}</text>
               </Show>
