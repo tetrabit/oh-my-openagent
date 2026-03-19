@@ -1396,7 +1396,7 @@ describe("sisyphus-task", () => {
   describe("run_in_background parameter", () => {
     test("#given category without run_in_background #when executing #then throws required parameter error", async () => {
       // given
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
       const mockManager = { launch: async () => ({}) }
       const mockClient = {
         app: { agents: async () => ({ data: [] }) },
@@ -1425,7 +1425,7 @@ describe("sisyphus-task", () => {
 
     test("#given subagent_type without run_in_background #when executing #then throws required parameter error", async () => {
       // given
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
       const mockManager = { launch: async () => ({}) }
       const mockClient = {
         app: { agents: async () => ({ data: [{ name: "explore", mode: "subagent" }] }) },
@@ -1454,7 +1454,7 @@ describe("sisyphus-task", () => {
 
     test("#given session_id without run_in_background #when executing #then throws required parameter error", async () => {
       // given
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
       const mockManager = { resume: async () => ({ id: "task-1", sessionID: "ses_1", status: "running" }) }
       const mockClient = {
         app: { agents: async () => ({ data: [] }) },
@@ -1483,7 +1483,7 @@ describe("sisyphus-task", () => {
 
     test("#given no category no subagent_type no session_id and no run_in_background #when executing #then throws required parameter error", async () => {
       // given
-      const { createDelegateTask } = require("./tools")
+      const createDelegateTask = await importFreshCreateDelegateTask()
       const mockManager = { launch: async () => ({}) }
       const mockClient = {
         app: { agents: async () => ({ data: [] }) },
@@ -1511,7 +1511,6 @@ describe("sisyphus-task", () => {
 
     test("#given explicit run_in_background=false #when executing #then sync execution succeeds", async () => {
       // given
-      const { createDelegateTask } = require("./tools")
       let promptCalled = false
       const mockManager = { launch: async () => ({}) }
       const mockClient = {
@@ -1532,6 +1531,37 @@ describe("sisyphus-task", () => {
           status: async () => ({ data: { ses_explicit_false: { type: "idle" } } }),
         },
       }
+      const executorMock = {
+        resolveSkillContent: mock(async () => ({
+          content: undefined,
+          contents: [],
+          error: null,
+        })),
+        resolveParentContext: mock(async () => ({ model: undefined, agent: "sisyphus" })),
+        resolveCategoryExecution: mock(async () => ({
+          agentToUse: "Sisyphus-Junior",
+          categoryModel: { providerID: "anthropic", modelID: "claude-haiku-4-5" },
+          categoryPromptAppend: undefined,
+          modelInfo: undefined,
+          actualModel: "anthropic/claude-haiku-4-5",
+          isUnstableAgent: false,
+        })),
+        resolveSubagentExecution: mock(async () => ({
+          agentToUse: "oracle",
+          categoryModel: { providerID: "anthropic", modelID: "claude-opus-4-6" },
+        })),
+        executeBackgroundTask: mock(async () => "Background task launched"),
+        executeSyncTask: mock(async () => {
+          promptCalled = true
+          return "Done"
+        }),
+        executeUnstableAgentTask: mock(async () => "Background task launched"),
+        executeBackgroundContinuation: mock(async () => "Background task continued"),
+        executeSyncContinuation: mock(async () => "Continued task result"),
+      }
+      mockModuleVariants("./executor", "./executor.ts", executorMock)
+      moduleImportCounter += 1
+      const { createDelegateTask } = await import(`./tools?explicit-false=${moduleImportCounter}`)
       const tool = createDelegateTask({ manager: mockManager, client: mockClient })
 
       // when
@@ -1553,7 +1583,6 @@ describe("sisyphus-task", () => {
 
     test("#given explicit run_in_background=true #when executing #then background execution succeeds", async () => {
       // given
-      const { createDelegateTask } = require("./tools")
       let launchCalled = false
       const mockManager = {
         launch: async () => {
@@ -1578,6 +1607,37 @@ describe("sisyphus-task", () => {
           messages: async () => ({ data: [] }),
         },
       }
+      const executorMock = {
+        resolveSkillContent: mock(async () => ({
+          content: undefined,
+          contents: [],
+          error: null,
+        })),
+        resolveParentContext: mock(async () => ({ model: undefined, agent: "sisyphus" })),
+        resolveCategoryExecution: mock(async () => ({
+          agentToUse: "Sisyphus-Junior",
+          categoryModel: { providerID: "openai", modelID: "gpt-5.4-mini" },
+          categoryPromptAppend: undefined,
+          modelInfo: undefined,
+          actualModel: "openai/gpt-5.4-mini",
+          isUnstableAgent: false,
+        })),
+        resolveSubagentExecution: mock(async () => ({
+          agentToUse: "oracle",
+          categoryModel: { providerID: "anthropic", modelID: "claude-opus-4-6" },
+        })),
+        executeBackgroundTask: mock(async () => {
+          launchCalled = true
+          return "Background task launched"
+        }),
+        executeSyncTask: mock(async () => "Sync task completed"),
+        executeUnstableAgentTask: mock(async () => "Background task launched"),
+        executeBackgroundContinuation: mock(async () => "Background task continued"),
+        executeSyncContinuation: mock(async () => "Continued task result"),
+      }
+      mockModuleVariants("./executor", "./executor.ts", executorMock)
+      moduleImportCounter += 1
+      const { createDelegateTask } = await import(`./tools?explicit-true=${moduleImportCounter}`)
       const tool = createDelegateTask({ manager: mockManager, client: mockClient })
 
       // when
