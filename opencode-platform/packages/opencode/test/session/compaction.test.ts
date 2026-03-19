@@ -15,6 +15,7 @@ function createModel(opts: {
   output: number
   input?: number
   cost?: Provider.Model["cost"]
+  npm?: string
 }): Provider.Model {
   return {
     id: "test-model",
@@ -34,7 +35,7 @@ function createModel(opts: {
       input: { text: true, image: false, audio: false, video: false },
       output: { text: true, image: false, audio: false, video: false },
     },
-    api: { npm: "@ai-sdk/anthropic" },
+    api: { npm: opts.npm ?? "@ai-sdk/anthropic" },
     options: {},
   } as Provider.Model
 }
@@ -70,7 +71,7 @@ describe("session.compaction.isOverflow", () => {
       directory: tmp.path,
       fn: async () => {
         const model = createModel({ context: 100_000, output: 32_000 })
-        const tokens = { input: 50_000, output: 10_000, reasoning: 0, cache: { read: 10_000, write: 0 } }
+        const tokens = { input: 60_000, output: 10_000, reasoning: 0, cache: { read: 10_000, write: 0 } }
         expect(await SessionCompaction.isOverflow({ tokens, model })).toBe(true)
       },
     })
@@ -112,6 +113,86 @@ describe("session.compaction.isOverflow", () => {
     })
   })
 
+  // ─── Bug reproduction tests ───────────────────────────────────────────
+  // These tests demonstrate that when limit.input is set, isOverflow()
+  // does not subtract any headroom for the next model response. This means
+  // compaction only triggers AFTER we've already consumed the full input
+  // budget, leaving zero room for the next API call's output tokens.
+  //
+  // Compare: without limit.input, usable = context - output (reserves space).
+  // With limit.input, usable = limit.input (reserves nothing).
+  //
+  // Related issues: #10634, #8089, #11086, #12621
+  // Open PRs: #6875, #12924
+
+  test("BUG: no headroom when limit.input is set — compaction should trigger near boundary but does not", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        // Simulate Claude with prompt caching: input limit = 200K, output limit = 32K
+        const model = createModel({ context: 200_000, input: 200_000, output: 32_000 })
+
+        // We've used 198K tokens total. Only 2K under the input limit.
+        // On the next turn, the full conversation (198K) becomes input,
+        // plus the model needs room to generate output — this WILL overflow.
+        const tokens = { input: 180_000, output: 15_000, reasoning: 0, cache: { read: 3_000, write: 0 } }
+        // count = 180K + 3K + 15K = 198K
+        // usable = limit.input = 200K (no output subtracted!)
+        // 198K > 200K = false → no compaction triggered
+
+        // WITHOUT limit.input: usable = 200K - 32K = 168K, and 198K > 168K = true ✓
+        // WITH limit.input: usable = 200K, and 198K > 200K = false ✗
+
+        // With 198K used and only 2K headroom, the next turn will overflow.
+        // Compaction MUST trigger here.
+        expect(await SessionCompaction.isOverflow({ tokens, model })).toBe(true)
+      },
+    })
+  })
+
+  test("BUG: without limit.input, same token count correctly triggers compaction", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        // Same model but without limit.input — uses context - output instead
+        const model = createModel({ context: 200_000, output: 32_000 })
+
+        // Same token usage as above
+        const tokens = { input: 180_000, output: 15_000, reasoning: 0, cache: { read: 3_000, write: 0 } }
+        // count = 198K
+        // usable = context - output = 200K - 32K = 168K
+        // 198K > 168K = true → compaction correctly triggered
+
+        const result = await SessionCompaction.isOverflow({ tokens, model })
+        expect(result).toBe(true) // ← Correct: headroom is reserved
+      },
+    })
+  })
+
+  test("BUG: asymmetry — limit.input model allows 30K more usage before compaction than equivalent model without it", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        // Two models with identical context/output limits, differing only in limit.input
+        const withInputLimit = createModel({ context: 200_000, input: 200_000, output: 32_000 })
+        const withoutInputLimit = createModel({ context: 200_000, output: 32_000 })
+
+        // 170K total tokens — well above context-output (168K) but below input limit (200K)
+        const tokens = { input: 166_000, output: 10_000, reasoning: 0, cache: { read: 5_000, write: 0 } }
+
+        const withLimit = await SessionCompaction.isOverflow({ tokens, model: withInputLimit })
+        const withoutLimit = await SessionCompaction.isOverflow({ tokens, model: withoutInputLimit })
+
+        // Both models have identical real capacity — they should agree:
+        expect(withLimit).toBe(true) // should compact (170K leaves no room for 32K output)
+        expect(withoutLimit).toBe(true) // correctly compacts (170K > 168K)
+      },
+    })
+  })
+
   test("returns false when model context limit is 0", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({
@@ -141,6 +222,212 @@ describe("session.compaction.isOverflow", () => {
         const model = createModel({ context: 100_000, output: 32_000 })
         const tokens = { input: 75_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } }
         expect(await SessionCompaction.isOverflow({ tokens, model })).toBe(false)
+      },
+    })
+  })
+})
+
+describe("session.compaction.prepareMessages", () => {
+  test("keeps the prior summary and newest turns when the full session no longer fits", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = createModel({ context: 2_400, input: 2_400, output: 400 })
+        const hugeUser = "OLDER_USER_" + "x".repeat(20_000)
+        const hugeAssistant = "OLDER_ASSISTANT_" + "y".repeat(20_000)
+        const prepared = await SessionCompaction.prepareMessages({
+          model,
+          promptText: "Summarize the work so far.",
+          messages: [
+            {
+              info: {
+                id: "message_user_summary",
+                sessionID: "session_test",
+                role: "user",
+                time: { created: 1 },
+                agent: "sisyphus",
+                model: { providerID: "test", modelID: "test-model" },
+              },
+              parts: [
+                {
+                  id: "part_user_summary",
+                  sessionID: "session_test",
+                  messageID: "message_user_summary",
+                  type: "compaction",
+                  auto: true,
+                },
+              ],
+            },
+            {
+              info: {
+                id: "message_assistant_summary",
+                sessionID: "session_test",
+                role: "assistant",
+                parentID: "message_user_summary",
+                modelID: "test-model",
+                providerID: "test",
+                mode: "compaction",
+                agent: "compaction",
+                path: { cwd: tmp.path, root: tmp.path },
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                time: { created: 2, completed: 3 },
+                summary: true,
+                finish: "stop",
+              },
+              parts: [
+                {
+                  id: "part_assistant_summary",
+                  sessionID: "session_test",
+                  messageID: "message_assistant_summary",
+                  type: "text",
+                  text: "SUMMARY_KEEP_ME",
+                },
+              ],
+            },
+            {
+              info: {
+                id: "message_user_old",
+                sessionID: "session_test",
+                role: "user",
+                time: { created: 4 },
+                agent: "sisyphus",
+                model: { providerID: "test", modelID: "test-model" },
+              },
+              parts: [
+                {
+                  id: "part_user_old",
+                  sessionID: "session_test",
+                  messageID: "message_user_old",
+                  type: "text",
+                  text: hugeUser,
+                },
+              ],
+            },
+            {
+              info: {
+                id: "message_assistant_old",
+                sessionID: "session_test",
+                role: "assistant",
+                parentID: "message_user_old",
+                modelID: "test-model",
+                providerID: "test",
+                mode: "sisyphus",
+                agent: "sisyphus",
+                path: { cwd: tmp.path, root: tmp.path },
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                time: { created: 5, completed: 6 },
+                finish: "stop",
+              },
+              parts: [
+                {
+                  id: "part_assistant_old",
+                  sessionID: "session_test",
+                  messageID: "message_assistant_old",
+                  type: "text",
+                  text: hugeAssistant,
+                },
+              ],
+            },
+            {
+              info: {
+                id: "message_user_recent",
+                sessionID: "session_test",
+                role: "user",
+                time: { created: 7 },
+                agent: "sisyphus",
+                model: { providerID: "test", modelID: "test-model" },
+              },
+              parts: [
+                {
+                  id: "part_user_recent",
+                  sessionID: "session_test",
+                  messageID: "message_user_recent",
+                  type: "text",
+                  text: "RECENT_USER_KEEP_ME",
+                },
+              ],
+            },
+            {
+              info: {
+                id: "message_assistant_recent",
+                sessionID: "session_test",
+                role: "assistant",
+                parentID: "message_user_recent",
+                modelID: "test-model",
+                providerID: "test",
+                mode: "sisyphus",
+                agent: "sisyphus",
+                path: { cwd: tmp.path, root: tmp.path },
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                time: { created: 8, completed: 9 },
+                finish: "stop",
+              },
+              parts: [
+                {
+                  id: "part_assistant_recent",
+                  sessionID: "session_test",
+                  messageID: "message_assistant_recent",
+                  type: "text",
+                  text: "RECENT_ASSISTANT_KEEP_ME",
+                },
+              ],
+            },
+          ],
+        })
+
+        const rendered = JSON.stringify(prepared.messages)
+        expect(prepared.truncated).toBe(true)
+        expect(prepared.trimmed).toBe(true)
+        expect(rendered).toContain("SUMMARY_KEEP_ME")
+        expect(rendered).toContain("RECENT_USER_KEEP_ME")
+        expect(rendered).toContain("RECENT_ASSISTANT_KEEP_ME")
+        expect(rendered).not.toContain("OLDER_USER_")
+        expect(rendered).not.toContain("OLDER_ASSISTANT_")
+      },
+    })
+  })
+
+  test("aggressively truncates the latest oversized turn instead of dropping it", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = createModel({ context: 2_400, input: 2_400, output: 400 })
+        const hugeUser = "LATEST_USER_" + "z".repeat(16_000)
+        const prepared = await SessionCompaction.prepareMessages({
+          model,
+          promptText: "Summarize the work so far.",
+          messages: [
+            {
+              info: {
+                id: "message_user_latest",
+                sessionID: "session_test",
+                role: "user",
+                time: { created: 1 },
+                agent: "sisyphus",
+                model: { providerID: "test", modelID: "test-model" },
+              },
+              parts: [
+                {
+                  id: "part_user_latest",
+                  sessionID: "session_test",
+                  messageID: "message_user_latest",
+                  type: "text",
+                  text: hugeUser,
+                },
+              ],
+            },
+          ],
+        })
+
+        const rendered = JSON.stringify(prepared.messages)
+        expect(prepared.truncated).toBe(true)
+        expect(rendered).toContain("LATEST_USER_")
+        expect(rendered).toContain("[Truncated for compaction:")
       },
     })
   })
@@ -290,4 +577,53 @@ describe("session.getUsage", () => {
 
     expect(result.cost).toBe(3 + 1.5)
   })
+
+  test.each(["@ai-sdk/anthropic", "@ai-sdk/amazon-bedrock", "@ai-sdk/google-vertex/anthropic"])(
+    "computes total from components for %s models",
+    (npm) => {
+      const model = createModel({ context: 100_000, output: 32_000, npm })
+      const usage = {
+        inputTokens: 1000,
+        outputTokens: 500,
+        // These providers typically report total as input + output only,
+        // excluding cache read/write.
+        totalTokens: 1500,
+        cachedInputTokens: 200,
+      }
+      if (npm === "@ai-sdk/amazon-bedrock") {
+        const result = Session.getUsage({
+          model,
+          usage,
+          metadata: {
+            bedrock: {
+              usage: {
+                cacheWriteInputTokens: 300,
+              },
+            },
+          },
+        })
+
+        expect(result.tokens.input).toBe(1000)
+        expect(result.tokens.cache.read).toBe(200)
+        expect(result.tokens.cache.write).toBe(300)
+        expect(result.tokens.total).toBe(2000)
+        return
+      }
+
+      const result = Session.getUsage({
+        model,
+        usage,
+        metadata: {
+          anthropic: {
+            cacheCreationInputTokens: 300,
+          },
+        },
+      })
+
+      expect(result.tokens.input).toBe(1000)
+      expect(result.tokens.cache.read).toBe(200)
+      expect(result.tokens.cache.write).toBe(300)
+      expect(result.tokens.total).toBe(2000)
+    },
+  )
 })

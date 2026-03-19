@@ -4,6 +4,8 @@ import { Installation } from "../installation"
 import { Auth, OAUTH_DUMMY_KEY } from "../auth"
 import os from "os"
 import { ProviderTransform } from "@/provider/transform"
+import { ModelID, ProviderID } from "@/provider/schema"
+import { setTimeout as sleep } from "node:timers/promises"
 
 const log = Log.create({ service: "plugin.codex" })
 
@@ -108,6 +110,77 @@ interface TokenResponse {
   expires_in?: number
 }
 
+interface OAuthErrorDetails {
+  errorCode?: string
+  detail?: string
+}
+
+function buildOAuthErrorMessage(prefix: string, statusCode: number, details?: OAuthErrorDetails): string {
+  const suffix = [details?.errorCode, details?.detail]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ")
+
+  return suffix.length > 0
+    ? `${prefix}: ${statusCode} ${suffix}`
+    : `${prefix}: ${statusCode}`
+}
+
+function normalizeOAuthErrorDetail(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined
+  const normalized = value.trim().replace(/\s+/g, " ")
+  if (normalized.length === 0) return undefined
+  return normalized.slice(0, 200)
+}
+
+async function readOAuthErrorDetails(response: Response): Promise<OAuthErrorDetails | undefined> {
+  const body = (await response.text()).trim()
+  if (!body) return undefined
+
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>
+    const errorCode = normalizeOAuthErrorDetail(parsed.error)
+    const detail =
+      normalizeOAuthErrorDetail(parsed.error_description) ??
+      normalizeOAuthErrorDetail(parsed.message) ??
+      normalizeOAuthErrorDetail(body)
+
+    if (!errorCode && !detail) {
+      return undefined
+    }
+
+    return { errorCode, detail }
+  } catch {
+    const detail = normalizeOAuthErrorDetail(body)
+    return detail ? { detail } : undefined
+  }
+}
+
+class OAuthTokenError extends Error {
+  readonly statusCode: number
+  readonly errorCode?: string
+  readonly detail?: string
+
+  constructor(name: string, prefix: string, statusCode: number, details?: OAuthErrorDetails) {
+    super(buildOAuthErrorMessage(prefix, statusCode, details))
+    this.name = name
+    this.statusCode = statusCode
+    this.errorCode = details?.errorCode
+    this.detail = details?.detail
+  }
+}
+
+class TokenExchangeError extends OAuthTokenError {
+  constructor(statusCode: number, details?: OAuthErrorDetails) {
+    super("TokenExchangeError", "Token exchange failed", statusCode, details)
+  }
+}
+
+class TokenRefreshError extends OAuthTokenError {
+  constructor(statusCode: number, details?: OAuthErrorDetails) {
+    super("TokenRefreshError", "Token refresh failed", statusCode, details)
+  }
+}
+
 async function exchangeCodeForTokens(code: string, redirectUri: string, pkce: PkceCodes): Promise<TokenResponse> {
   const response = await fetch(`${ISSUER}/oauth/token`, {
     method: "POST",
@@ -121,7 +194,7 @@ async function exchangeCodeForTokens(code: string, redirectUri: string, pkce: Pk
     }).toString(),
   })
   if (!response.ok) {
-    throw new Error(`Token exchange failed: ${response.status}`)
+    throw new TokenExchangeError(response.status, await readOAuthErrorDetails(response))
   }
   return response.json()
 }
@@ -137,7 +210,7 @@ async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> 
     }).toString(),
   })
   if (!response.ok) {
-    throw new Error(`Token refresh failed: ${response.status}`)
+    throw new TokenRefreshError(response.status, await readOAuthErrorDetails(response))
   }
   return response.json()
 }
@@ -361,20 +434,21 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
           "gpt-5.1-codex-max",
           "gpt-5.1-codex-mini",
           "gpt-5.2",
+          "gpt-5.4",
           "gpt-5.2-codex",
           "gpt-5.3-codex",
           "gpt-5.1-codex",
         ])
         for (const modelId of Object.keys(provider.models)) {
-          if (!allowedModels.has(modelId)) {
-            delete provider.models[modelId]
-          }
+          if (modelId.includes("codex")) continue
+          if (allowedModels.has(modelId)) continue
+          delete provider.models[modelId]
         }
 
         if (!provider.models["gpt-5.3-codex"]) {
           const model = {
-            id: "gpt-5.3-codex",
-            providerID: "openai",
+            id: ModelID.make("gpt-5.3-codex"),
+            providerID: ProviderID.openai,
             api: {
               id: "gpt-5.3-codex",
               url: "https://chatgpt.com/backend-api/codex",
@@ -602,7 +676,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
                     return { type: "failed" as const }
                   }
 
-                  await Bun.sleep(interval + OAUTH_POLLING_SAFETY_MARGIN_MS)
+                  await sleep(interval + OAUTH_POLLING_SAFETY_MARGIN_MS)
                 }
               },
             }
