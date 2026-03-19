@@ -71,7 +71,7 @@ async function importResolveModelForDelegateTaskWithCacheState(input: {
 					systemDefaultModel: "anthropic/claude-sonnet-4-6",
 				})
 
-				expect(result).toBeUndefined()
+				expect(result).toEqual({ skipped: true })
 			})
 		})
 
@@ -110,7 +110,7 @@ async function importResolveModelForDelegateTaskWithCacheState(input: {
 					availableModels: new Set(),
 				})
 
-				expect(result).toBeUndefined()
+				expect(result).toEqual({ skipped: true })
 			})
 		})
 	})
@@ -131,8 +131,7 @@ async function importResolveModelForDelegateTaskWithCacheState(input: {
 					systemDefaultModel: "anthropic/claude-sonnet-4-6",
 				})
 
-				expect(result).toBeDefined()
-				expect(result!.model).toBe("anthropic/claude-sonnet-4-6")
+				expect(result).toEqual({ model: "anthropic/claude-sonnet-4-6" })
 			})
 		})
 
@@ -150,8 +149,7 @@ async function importResolveModelForDelegateTaskWithCacheState(input: {
 					availableModels: new Set(["anthropic/claude-sonnet-4-6"]),
 				})
 
-				expect(result).toBeDefined()
-				expect(result!.model).toBe("anthropic/claude-sonnet-4-6")
+				expect(result).toEqual({ model: "anthropic/claude-sonnet-4-6" })
 			})
 		})
 	})

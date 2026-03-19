@@ -30,7 +30,6 @@ export async function handleSessionIdle(args: {
   backgroundManager?: BackgroundManager
   skipAgents?: string[]
   isContinuationStopped?: (sessionID: string) => boolean
-  shouldSkipContinuation?: (sessionID: string) => boolean
 }): Promise<void> {
   const {
     ctx,
@@ -39,7 +38,6 @@ export async function handleSessionIdle(args: {
     backgroundManager,
     skipAgents = DEFAULT_SKIP_AGENTS,
     isContinuationStopped,
-    shouldSkipContinuation,
   } = args
 
   log(`[${HOOK_NAME}] session.idle`, { sessionID })
@@ -98,12 +96,14 @@ export async function handleSessionIdle(args: {
 
   if (!todos || todos.length === 0) {
     sessionStateStore.resetContinuationProgress(sessionID)
+    sessionStateStore.resetContinuationProgress(sessionID)
     log(`[${HOOK_NAME}] No todos`, { sessionID })
     return
   }
 
   const incompleteCount = getIncompleteCount(todos)
   if (incompleteCount === 0) {
+    sessionStateStore.resetContinuationProgress(sessionID)
     sessionStateStore.resetContinuationProgress(sessionID)
     log(`[${HOOK_NAME}] All todos complete`, { sessionID, total: todos.length })
     return
@@ -124,22 +124,14 @@ export async function handleSessionIdle(args: {
   }
 
   if (state.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-    log(`[${HOOK_NAME}] Skipped: max consecutive failures reached`, {
-      sessionID,
-      consecutiveFailures: state.consecutiveFailures,
-      maxConsecutiveFailures: MAX_CONSECUTIVE_FAILURES,
-    })
+    log(`[${HOOK_NAME}] Skipped: max consecutive failures reached`, { sessionID, consecutiveFailures: state.consecutiveFailures })
     return
   }
 
   const effectiveCooldown =
     CONTINUATION_COOLDOWN_MS * Math.pow(2, Math.min(state.consecutiveFailures, 5))
   if (state.lastInjectedAt && Date.now() - state.lastInjectedAt < effectiveCooldown) {
-    log(`[${HOOK_NAME}] Skipped: cooldown active`, {
-      sessionID,
-      effectiveCooldown,
-      consecutiveFailures: state.consecutiveFailures,
-    })
+    log(`[${HOOK_NAME}] Skipped: cooldown active`, { sessionID, effectiveCooldown, consecutiveFailures: state.consecutiveFailures })
     return
   }
 
@@ -177,11 +169,6 @@ export async function handleSessionIdle(args: {
 
   if (isContinuationStopped?.(sessionID)) {
     log(`[${HOOK_NAME}] Skipped: continuation stopped for session`, { sessionID })
-    return
-  }
-
-  if (shouldSkipContinuation?.(sessionID)) {
-    log(`[${HOOK_NAME}] Skipped: another continuation hook already injected`, { sessionID })
     return
   }
 

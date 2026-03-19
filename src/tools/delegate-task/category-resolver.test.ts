@@ -39,17 +39,23 @@ async function prepareCategoryResolverTestModules(): Promise<void> {
 describe("resolveCategoryExecution", () => {
 	let connectedProvidersSpy: ReturnType<typeof spyOn> | undefined
 	let providerModelsSpy: ReturnType<typeof spyOn> | undefined
+	let hasConnectedProvidersSpy: ReturnType<typeof spyOn> | undefined
+	let hasProviderModelsSpy: ReturnType<typeof spyOn> | undefined
 
 	beforeEach(async () => {
 		await prepareCategoryResolverTestModules()
 		connectedProvidersSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(null)
 		providerModelsSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue(null)
+		hasConnectedProvidersSpy = spyOn(connectedProvidersCache, "hasConnectedProvidersCache").mockReturnValue(false)
+		hasProviderModelsSpy = spyOn(connectedProvidersCache, "hasProviderModelsCache").mockReturnValue(false)
 	})
 
 	afterEach(() => {
 		connectedProvidersSpy?.mockRestore()
 		providerModelsSpy?.mockRestore()
 		mock.restore()
+		hasConnectedProvidersSpy?.mockRestore()
+		hasProviderModelsSpy?.mockRestore()
 	})
 
 	const createMockExecutorContext = (): ExecutorContext => ({
@@ -87,6 +93,35 @@ describe("resolveCategoryExecution", () => {
 		//#then
 		expect(result.error).toBeUndefined()
 		expect(result.categoryModel).toEqual({ providerID: "openai", modelID: "gpt-5.3-codex", variant: "medium" })
+		expect(result.categoryModel).toEqual({ providerID: "openai", modelID: "gpt-5.3-codex", variant: "medium" })
+	})
+
+	test("uses built-in category model when category cache is not ready on first run", async () => {
+		//#given
+		const args = {
+			category: "deep",
+			prompt: "test prompt",
+			description: "Test task",
+			run_in_background: false,
+			load_skills: [],
+			blockedBy: undefined,
+			enableSkillTools: false,
+		}
+		const executorCtx = createMockExecutorContext()
+		executorCtx.userCategories = {
+			deep: {},
+		}
+		const inheritedModel = undefined
+		const systemDefaultModel = "anthropic/claude-sonnet-4-6"
+
+		//#when
+		const result = await resolveCategoryExecution(args, executorCtx, inheritedModel, systemDefaultModel)
+
+		//#then
+		expect(result.error).toBeUndefined()
+		expect(result.actualModel).toBe("openai/gpt-5.3-codex")
+		expect(result.categoryModel).toEqual({ providerID: "openai", modelID: "gpt-5.3-codex", variant: "medium" })
+		expect(result.agentToUse).toBeDefined()
 	})
 
 	test("returns 'unknown category' error for truly unknown categories", async () => {

@@ -195,7 +195,6 @@ export function createEventHandler(args: {
     await Promise.resolve(hooks.claudeCodeHooks?.event?.(input));
     await Promise.resolve(hooks.backgroundNotificationHook?.event?.(input));
     await Promise.resolve(hooks.sessionNotification?.(input));
-    await Promise.resolve(hooks.gptPermissionContinuation?.handler?.(input));
     await Promise.resolve(hooks.todoContinuationEnforcer?.handler?.(input));
     await Promise.resolve(hooks.unstableAgentBabysitter?.event?.(input));
     await Promise.resolve(hooks.contextWindowMonitor?.event?.(input));
@@ -420,6 +419,12 @@ export function createEventHandler(args: {
     if (event.type === "session.status") {
       const sessionID = props?.sessionID as string | undefined;
       const status = props?.status as { type?: string; attempt?: number; message?: string; next?: number } | undefined;
+
+      // Retry dedupe lifecycle: set key when a retry status is handled, clear it after recovery
+      // (non-retry idle) so future failures with the same key can trigger fallback again.
+      if (sessionID && status?.type === "idle") {
+        lastHandledRetryStatusKey.delete(sessionID);
+      }
 
       if (sessionID && status?.type === "retry" && isModelFallbackEnabled && !isRuntimeFallbackEnabled) {
         try {
