@@ -95,6 +95,16 @@ export function classifyErrorType(error: unknown): string | undefined {
   }
 
   if (
+    /token\s+refresh\s+failed/i.test(message) ||
+    /token\s+exchange\s+failed/i.test(message)
+  ) {
+    if (/(?:invalid_grant|invalid_client|revoked|expired\s+refresh\s+token|reauthori[sz]e)/i.test(message)) {
+      return "token_refresh_auth_failed"
+    }
+    return "token_refresh_failed"
+  }
+
+  if (
     errorName?.includes("providermodelnotfounderror") ||
     errorName?.includes("modelnotfounderror") ||
     (errorName?.includes("unknownerror") && /model\s+not\s+found/i.test(message))
@@ -164,6 +174,10 @@ export function isRetryableError(error: unknown, retryOnErrors: number[]): boole
   const errorType = classifyErrorType(error)
 
   if (errorType === "missing_api_key") {
+    return true
+  }
+
+  if (errorType === "token_refresh_failed" || errorType === "token_refresh_auth_failed") {
     return true
   }
 

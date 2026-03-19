@@ -39,4 +39,5 @@ export interface HookDeps {
   sessionRetryInFlight: Set<string>
   sessionAwaitingFallbackResult: Set<string>
   sessionFallbackTimeouts: Map<string, ReturnType<typeof setTimeout>>
+  sessionTokenRefreshRetryCounts: Map<string, number>
 }

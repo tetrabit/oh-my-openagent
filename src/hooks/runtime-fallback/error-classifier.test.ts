@@ -96,4 +96,36 @@ describe("runtime-fallback error classifier", () => {
     //#then
     expect(signal).toBeUndefined()
   })
+
+  test("treats token refresh failures as retryable recovery candidates", () => {
+    //#given
+    const error = {
+      name: "UnknownError",
+      data: {
+        message: "Error: Token refresh failed: 400",
+      },
+    }
+
+    //#when
+    const errorType = classifyErrorType(error)
+    const retryable = isRetryableError(error, [400, 429, 503, 529])
+
+    //#then
+    expect(errorType).toBe("token_refresh_failed")
+    expect(retryable).toBe(true)
+  })
+
+  test("classifies invalid grant refresh failures separately", () => {
+    //#given
+    const error = {
+      name: "TokenRefreshError",
+      message: "Token refresh failed: 400 invalid_grant refresh token revoked",
+    }
+
+    //#when
+    const errorType = classifyErrorType(error)
+
+    //#then
+    expect(errorType).toBe("token_refresh_auth_failed")
+  })
 })

@@ -4,7 +4,7 @@ import { log } from "../../shared/logger"
 import { createFallbackState } from "./fallback-state"
 
 export function createChatMessageHandler(deps: HookDeps) {
-  const { config, sessionStates, sessionLastAccess } = deps
+  const { config, sessionStates, sessionLastAccess, sessionTokenRefreshRetryCounts } = deps
 
   return async (
     input: { sessionID: string; agent?: string; model?: { providerID: string; modelID: string } },
@@ -34,6 +34,7 @@ export function createChatMessageHandler(deps: HookDeps) {
         from: state.currentModel,
         to: requestedModel,
       })
+      sessionTokenRefreshRetryCounts.delete(sessionID)
       state = createFallbackState(requestedModel)
       sessionStates.set(sessionID, state)
       return

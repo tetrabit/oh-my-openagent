@@ -58,6 +58,11 @@ export function extractErrorName(error: unknown): string | undefined {
     return directName
   }
 
+  const dataName = (errorObj.data as Record<string, unknown> | undefined)?.name
+  if (typeof dataName === "string" && dataName.length > 0) {
+    return dataName
+  }
+
   const nestedError = errorObj.error as Record<string, unknown> | undefined
   const nestedName = nestedError?.name
   if (typeof nestedName === "string" && nestedName.length > 0) {
@@ -109,6 +114,16 @@ export function classifyErrorType(error: unknown): string | undefined {
 
   if (/api.?key/i.test(message) && /must be a string/i.test(message)) {
     return "invalid_api_key"
+  }
+
+  if (
+    /token\s+refresh\s+failed/i.test(message) ||
+    /token\s+exchange\s+failed/i.test(message)
+  ) {
+    if (/(?:invalid_grant|invalid_client|revoked|expired\s+refresh\s+token|reauthori[sz]e)/i.test(message)) {
+      return "token_refresh_auth_failed"
+    }
+    return "token_refresh_failed"
   }
 
   if (errorName?.includes("unknownerror") && /model\s+not\s+found/i.test(message)) {
@@ -181,6 +196,10 @@ export function isRetryableError(error: unknown, retryOnErrors: number[]): boole
   }
 
   if (errorType === "missing_api_key") {
+    return true
+  }
+
+  if (errorType === "token_refresh_failed" || errorType === "token_refresh_auth_failed") {
     return true
   }
 
