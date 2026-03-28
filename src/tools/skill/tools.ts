@@ -7,6 +7,7 @@ import { getAllSkills, extractSkillTemplate, clearSkillCache } from "../../featu
 import { injectGitMasterConfig } from "../../features/opencode-skill-loader/skill-content"
 import type { SkillMcpManager, SkillMcpClientInfo, SkillMcpServerContext } from "../../features/skill-mcp-manager"
 import type { Tool, Resource, Prompt } from "@modelcontextprotocol/sdk/types.js"
+import { sanitizeJsonSchema } from "../../plugin/normalize-tool-arg-schemas"
 import { discoverCommandsSync } from "../slashcommand/command-discovery"
 import type { CommandInfo } from "../slashcommand/types"
 import { formatLoadedCommand } from "../slashcommand/command-output-formatter"
@@ -155,7 +156,7 @@ async function formatMcpCapabilities(
           sections.push("")
           sections.push("**inputSchema:**")
           sections.push("```json")
-          sections.push(JSON.stringify(t.inputSchema, null, 2))
+          sections.push(JSON.stringify(sanitizeJsonSchema(t.inputSchema), null, 2))
           sections.push("```")
           sections.push("")
         }
@@ -188,11 +189,34 @@ export function createSkillTool(options: SkillLoadOptions = {}): ToolDefinition 
 
   const getSkills = async (): Promise<LoadedSkill[]> => {
     clearSkillCache()
-    const discovered = await getAllSkills({disabledSkills: options?.disabledSkills})
-    if (!options.skills) return discovered
-    const discoveredNames = new Set(discovered.map(s => s.name))
-    const extras = options.skills.filter(s => !discoveredNames.has(s.name))
-    return [...discovered, ...extras]
+    const discovered = await getAllSkills({disabledSkills: options?.disabledSkills, browserProvider: options?.browserProvider})
+    const allSkills = !options.skills
+      ? discovered
+      : [...discovered, ...options.skills.filter(s => !new Set(discovered.map(d => d.name)).has(s.name))]
+
+    if (options.nativeSkills) {
+      const knownNames = new Set(allSkills.map(s => s.name))
+      try {
+        const nativeAll = await options.nativeSkills.all()
+        for (const native of nativeAll) {
+          if (knownNames.has(native.name)) continue
+          allSkills.push({
+            name: native.name,
+            path: native.location,
+            definition: {
+              name: native.name,
+              description: native.description,
+              template: native.content,
+            },
+            scope: "config",
+          })
+        }
+      } catch {
+        // Native skill discovery may not be available
+      }
+    }
+
+    return allSkills
   }
 
   const getCommands = (): CommandInfo[] => {

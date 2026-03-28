@@ -29,6 +29,9 @@ export function applyToolConfig(params: {
     ? { todowrite: "deny", todoread: "deny" }
     : {}
 
+  const existingPermission = params.config.permission as Record<string, unknown> | undefined;
+  const skillDeniedByHost = existingPermission?.skill === "deny";
+
   params.config.tools = {
     ...(params.config.tools as Record<string, unknown>),
     "grep_app_*": false,
@@ -40,11 +43,16 @@ export function applyToolConfig(params: {
     ...(params.pluginConfig.experimental?.task_system
       ? { todowrite: false, todoread: false }
       : {}),
+    ...(skillDeniedByHost
+      ? { skill: false, skill_mcp: false }
+      : {}),
   };
 
   const isCliRunMode = process.env.OPENCODE_CLI_RUN_MODE === "true";
   const configQuestionPermission = getConfigQuestionPermission();
+  const isQuestionDisabledByPlugin = params.pluginConfig.disabled_tools?.includes("question") ?? false;
   const questionPermission =
+    isQuestionDisabledByPlugin ? "deny" :
     configQuestionPermission === "deny" ? "deny" :
     isCliRunMode ? "deny" :
     "allow";

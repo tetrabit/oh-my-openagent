@@ -4,6 +4,7 @@ import type { AutoRetryHelpers } from "./auto-retry"
 import { createFallbackState } from "./fallback-state"
 import { createMessageUpdateHandler } from "./message-update-handler"
 import { hasVisibleAssistantResponse } from "./visible-assistant-response"
+import { extractAutoRetrySignal } from "./error-classifier"
 
 function createContext(messagesResponse: unknown): RuntimeFallbackPluginInput {
   return {
@@ -55,6 +56,31 @@ describe("hasVisibleAssistantResponse", () => {
 
     // then
     expect(result).toBe(true)
+  })
+
+  it("#given a too-many-requests assistant reply #when visibility is checked #then it is treated as an auto-retry signal", async () => {
+    // given
+    const checkVisibleResponse = hasVisibleAssistantResponse(extractAutoRetrySignal)
+    const ctx = createContext({
+      data: [
+        { info: { role: "user" }, parts: [{ type: "text", text: "latest question" }] },
+        {
+          info: { role: "assistant" },
+          parts: [
+            {
+              type: "text",
+              text: "Too Many Requests: Sorry, you've exhausted this model's rate limit. Please try a different model.",
+            },
+          ],
+        },
+      ],
+    })
+
+    // when
+    const result = await checkVisibleResponse(ctx, "session-rate-limit", undefined)
+
+    // then
+    expect(result).toBe(false)
   })
 })
 

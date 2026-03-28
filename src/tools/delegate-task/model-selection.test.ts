@@ -1,67 +1,29 @@
 declare const require: (name: string) => any
-const { describe, test, expect, beforeEach, afterEach, mock } = require("bun:test")
+const { afterEach, beforeEach, describe, expect, mock, spyOn, test } = require("bun:test")
+import { resolveModelForDelegateTask } from "./model-selection"
+import * as connectedProvidersCache from "../../shared/connected-providers-cache"
 
-let moduleImportCounter = 0
+describe("resolveModelForDelegateTask", () => {
+	let hasConnectedProvidersSpy: ReturnType<typeof spyOn> | undefined
+	let hasProviderModelsSpy: ReturnType<typeof spyOn> | undefined
 
-async function importResolveModelForDelegateTaskWithCacheState(input: {
-	hasConnectedProvidersCache: boolean
-	hasProviderModelsCache: boolean
-}): Promise<typeof import("./model-selection").resolveModelForDelegateTask> {
-	moduleImportCounter += 1
-	const connectedProvidersCache = await import(`../../shared/connected-providers-cache?test=${moduleImportCounter}`)
-	const mockedModule = {
-		...connectedProvidersCache,
-		hasConnectedProvidersCache: () => input.hasConnectedProvidersCache,
-		hasProviderModelsCache: () => input.hasProviderModelsCache,
-	}
-	const normalizeModelName = (name: string) =>
-		name
-			.toLowerCase()
-			.replace(/claude-(opus|sonnet|haiku)-(\d+)[.-](\d+)/g, "claude-$1-$2.$3")
-	const realModelAvailability = await import(`../../shared/model-availability?test=${moduleImportCounter}`)
-	const modelAvailability = {
-		...realModelAvailability,
-		fuzzyMatchModel: (target: string, available: Set<string>, providers?: string[]) => {
-			let candidates = Array.from(available)
-			if (providers && providers.length > 0) {
-				const providerSet = new Set(providers)
-				candidates = candidates.filter((model) => providerSet.has(model.split("/")[0]))
-			}
-			const targetNormalized = normalizeModelName(target)
-			const matches = candidates.filter((model) => normalizeModelName(model).includes(targetNormalized))
-			if (matches.length === 0) return null
-			const exactMatch = matches.find((model) => normalizeModelName(model) === targetNormalized)
-			if (exactMatch) return exactMatch
-			const exactModelIdMatches = matches.filter((model) => normalizeModelName(model.split("/").slice(1).join("/")) === targetNormalized)
-			if (exactModelIdMatches.length > 0) {
-				return exactModelIdMatches.reduce((shortest, current) => current.length < shortest.length ? current : shortest)
-			}
-			return matches.reduce((shortest, current) => current.length < shortest.length ? current : shortest)
-		},
-	}
-	mock.module("../../shared/connected-providers-cache", () => mockedModule)
-	mock.module(new URL("../../shared/connected-providers-cache.ts", import.meta.url).href, () => mockedModule)
-	mock.module("../../shared/model-availability", () => modelAvailability)
-	mock.module(new URL("../../shared/model-availability.ts", import.meta.url).href, () => modelAvailability)
-	return (await import(`./model-selection?test=${moduleImportCounter}`)).resolveModelForDelegateTask
-}
-
-	describe("resolveModelForDelegateTask", () => {
 	beforeEach(() => {
 		mock.restore()
 	})
 
 	afterEach(() => {
-		mock.restore()
+		hasConnectedProvidersSpy?.mockRestore()
+		hasProviderModelsSpy?.mockRestore()
 	})
 
 	describe("#given no provider cache exists (pre-cache scenario)", () => {
+		beforeEach(() => {
+			hasConnectedProvidersSpy = spyOn(connectedProvidersCache, "hasConnectedProvidersCache").mockReturnValue(false)
+			hasProviderModelsSpy = spyOn(connectedProvidersCache, "hasProviderModelsCache").mockReturnValue(false)
+		})
+
 		describe("#when availableModels is empty and no user model override", () => {
-			test("#then returns undefined to let OpenCode use system default", async () => {
-				const resolveModelForDelegateTask = await importResolveModelForDelegateTaskWithCacheState({
-					hasConnectedProvidersCache: false,
-					hasProviderModelsCache: false,
-				})
+			test("#then returns skipped sentinel to leave model unpinned", () => {
 				const result = resolveModelForDelegateTask({
 					categoryDefaultModel: "anthropic/claude-sonnet-4-6",
 					fallbackChain: [
@@ -76,11 +38,7 @@ async function importResolveModelForDelegateTaskWithCacheState(input: {
 		})
 
 		describe("#when user explicitly set a model override", () => {
-			test("#then returns the user model regardless of cache state", async () => {
-				const resolveModelForDelegateTask = await importResolveModelForDelegateTaskWithCacheState({
-					hasConnectedProvidersCache: false,
-					hasProviderModelsCache: false,
-				})
+			test("#then returns the user model regardless of cache state", () => {
 				const result = resolveModelForDelegateTask({
 					userModel: "openai/gpt-5.4",
 					categoryDefaultModel: "anthropic/claude-sonnet-4-6",
@@ -96,11 +54,7 @@ async function importResolveModelForDelegateTaskWithCacheState(input: {
 		})
 
 		describe("#when user set fallback_models but no cache exists", () => {
-			test("#then returns undefined (skip fallback resolution without cache)", async () => {
-				const resolveModelForDelegateTask = await importResolveModelForDelegateTaskWithCacheState({
-					hasConnectedProvidersCache: false,
-					hasProviderModelsCache: false,
-				})
+			test("#then returns skipped sentinel (skip fallback resolution without cache)", () => {
 				const result = resolveModelForDelegateTask({
 					userFallbackModels: ["openai/gpt-5.4", "google/gemini-3.1-pro"],
 					categoryDefaultModel: "anthropic/claude-sonnet-4-6",
@@ -116,12 +70,13 @@ async function importResolveModelForDelegateTaskWithCacheState(input: {
 	})
 
 	describe("#given provider cache exists", () => {
+		beforeEach(() => {
+			hasConnectedProvidersSpy = spyOn(connectedProvidersCache, "hasConnectedProvidersCache").mockReturnValue(true)
+			hasProviderModelsSpy = spyOn(connectedProvidersCache, "hasProviderModelsCache").mockReturnValue(true)
+		})
+
 		describe("#when availableModels is empty (cache exists but empty)", () => {
-			test("#then falls through to category default model (existing behavior)", async () => {
-				const resolveModelForDelegateTask = await importResolveModelForDelegateTaskWithCacheState({
-					hasConnectedProvidersCache: true,
-					hasProviderModelsCache: true,
-				})
+			test("#then falls through to category default model (existing behavior)", () => {
 				const result = resolveModelForDelegateTask({
 					categoryDefaultModel: "anthropic/claude-sonnet-4-6",
 					fallbackChain: [
@@ -136,11 +91,7 @@ async function importResolveModelForDelegateTaskWithCacheState(input: {
 		})
 
 		describe("#when availableModels has entries and category default matches", () => {
-			test("#then resolves via fuzzy match (existing behavior)", async () => {
-				const resolveModelForDelegateTask = await importResolveModelForDelegateTaskWithCacheState({
-					hasConnectedProvidersCache: true,
-					hasProviderModelsCache: true,
-				})
+			test("#then resolves via fuzzy match (existing behavior)", () => {
 				const result = resolveModelForDelegateTask({
 					categoryDefaultModel: "anthropic/claude-sonnet-4-6",
 					fallbackChain: [
@@ -151,16 +102,130 @@ async function importResolveModelForDelegateTaskWithCacheState(input: {
 
 				expect(result).toEqual({ model: "anthropic/claude-sonnet-4-6" })
 			})
+
+			test("#then trusts user-configured category model without fuzzy validation", () => {
+				const result = resolveModelForDelegateTask({
+					categoryDefaultModel: "new-api-openai/gpt-5.4-high",
+					isUserConfiguredCategoryModel: true,
+					availableModels: new Set(["openai/gpt-5.4"]),
+				})
+
+				expect(result).toEqual({ model: "new-api-openai/gpt-5.4-high" })
+			})
+		})
+
+		describe("#when user fallback models include variant syntax", () => {
+			test("#then resolves a parenthesized variant against the base available model", () => {
+				const result = resolveModelForDelegateTask({
+					userFallbackModels: ["openai/gpt-5.2(high)"],
+					availableModels: new Set(["openai/gpt-5.2"]),
+				})
+
+				expect(result).toEqual({ model: "openai/gpt-5.2", variant: "high", matchedFallback: true })
+			})
+
+			test("#then resolves a space-separated variant against the base available model", () => {
+				const result = resolveModelForDelegateTask({
+					userFallbackModels: ["gpt-5.2 medium"],
+					availableModels: new Set(["openai/gpt-5.2"]),
+				})
+
+				expect(result).toEqual({ model: "openai/gpt-5.2", variant: "medium", matchedFallback: true })
+			})
+		})
+	})
+
+	describe("#given provider cache exists and connected providers are known", () => {
+		let readConnectedProvidersSpy: ReturnType<typeof spyOn> | undefined
+
+		beforeEach(() => {
+			hasConnectedProvidersSpy = spyOn(connectedProvidersCache, "hasConnectedProvidersCache").mockReturnValue(true)
+			hasProviderModelsSpy = spyOn(connectedProvidersCache, "hasProviderModelsCache").mockReturnValue(true)
+		})
+
+		afterEach(() => {
+			readConnectedProvidersSpy?.mockRestore()
+		})
+
+		describe("#when availableModels is empty and fallback chain starts with unauthenticated provider", () => {
+			test("#then skips unauthenticated providers and resolves to first connected one", () => {
+				readConnectedProvidersSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["openai", "anthropic"])
+
+				const result = resolveModelForDelegateTask({
+					fallbackChain: [
+						{ providers: ["xai"], model: "grok-code-fast-1" },
+						{ providers: ["opencode-go"], model: "minimax-m2.7" },
+						{ providers: ["anthropic", "opencode"], model: "claude-haiku-4-5" },
+						{ providers: ["opencode"], model: "gpt-5-nano" },
+					],
+					availableModels: new Set(),
+				})
+
+				expect(result).toBeDefined()
+				expect(result).not.toHaveProperty("skipped")
+				const resolved = result as { model: string; variant?: string }
+				expect(resolved.model).toBe("anthropic/claude-haiku-4-5")
+			})
+
+			test("#then resolves first provider in entry that is connected", () => {
+				readConnectedProvidersSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["openai", "github-copilot"])
+
+				const result = resolveModelForDelegateTask({
+					fallbackChain: [
+						{ providers: ["opencode-go"], model: "minimax-m2.7" },
+						{ providers: ["openai", "github-copilot"], model: "gpt-5.4", variant: "high" },
+					],
+					availableModels: new Set(),
+				})
+
+				expect(result).toBeDefined()
+				const resolved = result as { model: string; variant?: string }
+				expect(resolved.model).toBe("openai/gpt-5.4")
+				expect(resolved.variant).toBe("high")
+			})
+
+			test("#then falls through to system default when no provider in chain is connected", () => {
+				readConnectedProvidersSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["anthropic"])
+
+				const result = resolveModelForDelegateTask({
+					fallbackChain: [
+						{ providers: ["xai"], model: "grok-code-fast-1" },
+						{ providers: ["opencode-go"], model: "minimax-m2.7" },
+					],
+					availableModels: new Set(),
+					systemDefaultModel: "anthropic/claude-sonnet-4-6",
+				})
+
+				expect(result).toEqual({ model: "anthropic/claude-sonnet-4-6" })
+			})
+		})
+
+		describe("#when connected providers cache is null (not yet populated)", () => {
+			test("#then falls back to first entry in chain (legacy behavior)", () => {
+				readConnectedProvidersSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(null)
+
+				const result = resolveModelForDelegateTask({
+					fallbackChain: [
+						{ providers: ["xai"], model: "grok-code-fast-1" },
+					],
+					availableModels: new Set(),
+				})
+
+				expect(result).toBeDefined()
+				const resolved = result as { model: string }
+				expect(resolved.model).toBe("xai/grok-code-fast-1")
+			})
 		})
 	})
 
 	describe("#given only connected providers cache exists (no provider-models cache)", () => {
+		beforeEach(() => {
+			hasConnectedProvidersSpy = spyOn(connectedProvidersCache, "hasConnectedProvidersCache").mockReturnValue(true)
+			hasProviderModelsSpy = spyOn(connectedProvidersCache, "hasProviderModelsCache").mockReturnValue(false)
+		})
+
 		describe("#when availableModels is empty", () => {
-			test("#then falls through to existing resolution (cache partially ready)", async () => {
-				const resolveModelForDelegateTask = await importResolveModelForDelegateTaskWithCacheState({
-					hasConnectedProvidersCache: true,
-					hasProviderModelsCache: false,
-				})
+			test("#then falls through to existing resolution (cache partially ready)", () => {
 				const result = resolveModelForDelegateTask({
 					categoryDefaultModel: "anthropic/claude-sonnet-4-6",
 					fallbackChain: [

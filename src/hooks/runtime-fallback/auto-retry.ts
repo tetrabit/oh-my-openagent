@@ -11,6 +11,7 @@ import { getLastUserRetryParts } from "./last-user-retry-parts"
 import { extractSessionMessages } from "./session-messages"
 import { getAnthropicStatusSnapshot, isDirectAnthropicModel } from "./anthropic-status"
 import type { AnthropicStatusSnapshot } from "./anthropic-status"
+import { getAgentDisplayName } from "../../shared/agent-display-names"
 
 const SESSION_TTL_MS = 30 * 60 * 1000
 const TOKEN_REFRESH_RETRY_DELAYS_MS = [500, 1_500, 4_000, 8_000]
@@ -166,13 +167,14 @@ export function createAutoRetryHelpers(deps: HookDeps) {
         })
 
         const retryAgent = resolvedAgent ?? getSessionAgent(sessionID)
+        const retryAgentDisplayName = retryAgent ? getAgentDisplayName(retryAgent) : undefined
         sessionAwaitingFallbackResult.add(sessionID)
         scheduleSessionFallbackTimeout(sessionID, retryAgent)
 
         await ctx.client.session.promptAsync({
           path: { id: sessionID },
           body: {
-            ...(retryAgent ? { agent: retryAgent } : {}),
+            ...(retryAgentDisplayName ? { agent: retryAgentDisplayName } : {}),
             ...retryModelPayload,
             parts: retryParts,
           },
