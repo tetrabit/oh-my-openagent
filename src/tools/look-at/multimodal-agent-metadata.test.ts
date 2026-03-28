@@ -26,21 +26,12 @@ function createPluginInput(agentData: Array<Record<string, unknown>>): PluginInp
 }
 
 describe("resolveMultimodalLookerAgentMetadata", () => {
-  let freshConnectedProvidersCache: typeof connectedProvidersCache
-  let freshModelAvailability: typeof modelAvailability
-  beforeEach(async () => {
+  beforeEach(() => {
     mock.restore()
-    // Re-import modules fresh to bypass any previous contamination
-    freshConnectedProvidersCache = await import("../../shared/connected-providers-cache")
-    freshModelAvailability = await import("../../shared/model-availability")
-    mock.module("../../shared/connected-providers-cache", () => freshConnectedProvidersCache)
-    mock.module("../../shared/model-availability", () => freshModelAvailability)
     clearVisionCapableModelsCache()
   })
 
   afterEach(() => {
-    ;(freshModelAvailability?.fetchAvailableModels as unknown as { mockRestore?: () => void })?.mockRestore?.()
-    ;(freshConnectedProvidersCache?.readConnectedProvidersCache as unknown as { mockRestore?: () => void })?.mockRestore?.()
     clearVisionCapableModelsCache()
     mock.restore()
   })

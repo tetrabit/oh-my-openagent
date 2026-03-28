@@ -15,6 +15,11 @@ export interface SyncResult {
   message?: string
 }
 
+export interface SyncCachePackageJsonOptions {
+  cacheDir?: string
+  packageName?: string
+}
+
 const EXACT_SEMVER_REGEX = /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/
 
 function safeUnlink(filePath: string): void {
@@ -32,8 +37,13 @@ function getIntentVersion(pluginInfo: PluginEntryInfo): string {
   return pluginInfo.pinnedVersion
 }
 
-export function syncCachePackageJsonToIntent(pluginInfo: PluginEntryInfo): SyncResult {
-  const cachePackageJsonPath = path.join(CACHE_DIR, "package.json")
+export function syncCachePackageJsonToIntent(
+  pluginInfo: PluginEntryInfo,
+  options?: SyncCachePackageJsonOptions,
+): SyncResult {
+  const cacheDir = options?.cacheDir ?? CACHE_DIR
+  const packageName = options?.packageName ?? PACKAGE_NAME
+  const cachePackageJsonPath = path.join(cacheDir, "package.json")
 
   if (!fs.existsSync(cachePackageJsonPath)) {
     log("[auto-update-checker] Cache package.json not found, nothing to sync")
@@ -57,12 +67,12 @@ export function syncCachePackageJsonToIntent(pluginInfo: PluginEntryInfo): SyncR
     return { synced: false, error: "parse_error", message: "Failed to parse cache package.json (malformed JSON)" }
   }
 
-  if (!pkgJson || !pkgJson.dependencies?.[PACKAGE_NAME]) {
+  if (!pkgJson || !pkgJson.dependencies?.[packageName]) {
     log("[auto-update-checker] Plugin not in cache package.json dependencies, nothing to sync")
     return { synced: false, error: "plugin_not_in_deps", message: "Plugin not in cache package.json dependencies" }
   }
 
-  const currentVersion = pkgJson.dependencies[PACKAGE_NAME]
+  const currentVersion = pkgJson.dependencies[packageName]
   const intentVersion = getIntentVersion(pluginInfo)
 
   if (currentVersion === intentVersion) {
@@ -83,7 +93,7 @@ export function syncCachePackageJsonToIntent(pluginInfo: PluginEntryInfo): SyncR
     )
   }
 
-  pkgJson.dependencies[PACKAGE_NAME] = intentVersion
+  pkgJson.dependencies[packageName] = intentVersion
 
   const tmpPath = `${cachePackageJsonPath}.${crypto.randomUUID()}`
   try {

@@ -2104,6 +2104,60 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toContain("anthropic/claude-opus-4-6")
     })
 
+    test("triggers fallback when message includes retry notice text plus explicit error parts", async () => {
+      const retriedModels: string[] = []
+
+      const hook = createRuntimeFallbackHook(
+        createMockPluginInput({
+          session: {
+            messages: async () => ({
+              data: [{ info: { role: "user" }, parts: [{ type: "text", text: "test" }] }],
+            }),
+            promptAsync: async (args: unknown) => {
+              const model = (args as { body?: { model?: { providerID?: string; modelID?: string } } })?.body?.model
+              if (model?.providerID && model?.modelID) {
+                retriedModels.push(`${model.providerID}/${model.modelID}`)
+              }
+              return {}
+            },
+          },
+        }),
+        {
+          config: createMockConfig({ notify_on_fallback: false }),
+          pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.4"]),
+        }
+      )
+
+      const sessionID = "test-session-mixed-retry-and-error"
+      SessionCategoryRegistry.register(sessionID, "test")
+
+      await hook.event({
+        event: {
+          type: "session.created",
+          properties: { info: { id: sessionID, model: "anthropic/claude-opus-4-6" } },
+        },
+      })
+
+      await hook.event({
+        event: {
+          type: "message.updated",
+          properties: {
+            info: {
+              sessionID,
+              role: "assistant",
+              model: "anthropic/claude-opus-4-6",
+            },
+            parts: [
+              { type: "text", text: "The usage limit has been reached [retrying in 27s attempt #6]" },
+              { type: "error", text: "Rate limit exceeded" },
+            ],
+          },
+        },
+      })
+
+      expect(retriedModels).toContain("openai/gpt-5.4")
+    })
+
     test("does NOT trigger fallback for normal type:error-free messages", async () => {
       const retriedModels: string[] = []
 

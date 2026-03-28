@@ -8,6 +8,16 @@ import type { OpencodeClient } from "./types"
 import * as originalSdk from "@opencode-ai/sdk"
 import * as originalPortUtils from "../../shared/port-utils"
 
+function mockModuleVariants(
+  specifier: string,
+  filePath: string,
+  moduleValue: unknown,
+): void {
+  const factory = () => moduleValue
+  mock.module(specifier, factory)
+  mock.module(new URL(filePath, import.meta.url).href, factory)
+}
+
 const mockServerClose = mock(() => {})
 const mockCreateOpencode = mock(() =>
   Promise.resolve({
@@ -24,15 +34,15 @@ mock.module("@opencode-ai/sdk", () => ({
   createOpencodeClient: mockCreateOpencodeClient,
 }))
 
-mock.module("../../shared/port-utils", () => ({
+mockModuleVariants("../../shared/port-utils", "../../shared/port-utils.ts", {
   isPortAvailable: mockIsPortAvailable,
   getAvailableServerPort: mockGetAvailableServerPort,
   DEFAULT_SERVER_PORT: 4096,
-}))
+})
 
 afterAll(() => {
   mock.module("@opencode-ai/sdk", () => originalSdk)
-  mock.module("../../shared/port-utils", () => originalPortUtils)
+  mockModuleVariants("../../shared/port-utils", "../../shared/port-utils.ts", originalPortUtils)
 })
 
 const { createServerConnection } = await import("./server-connection")

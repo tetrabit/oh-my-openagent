@@ -1,15 +1,10 @@
-import { log } from "../../shared/logger"
 import type { PluginInput } from "@opencode-ai/plugin"
-import { normalizeSDKResponse } from "../../shared"
-import { isSqliteBackend } from "../../shared/opencode-storage-detection"
-import {
-  findEmptyMessages,
-  findMessagesWithEmptyTextParts,
-  injectTextPart,
-  replaceEmptyTextParts,
-} from "../session-recovery/storage"
-import { findMessagesWithEmptyTextPartsFromSDK, replaceEmptyTextPartsAsync } from "../session-recovery/storage/empty-text"
-import { injectTextPartAsync } from "../session-recovery/storage/text-part-injector"
+import * as logger from "../../shared/logger"
+import * as shared from "../../shared"
+import * as opencodeStorageDetection from "../../shared/opencode-storage-detection"
+import * as sessionRecoveryStorage from "../session-recovery/storage"
+import * as emptyTextStorage from "../session-recovery/storage/empty-text"
+import * as textPartInjector from "../session-recovery/storage/text-part-injector"
 import type { Client } from "./client"
 
 export const PLACEHOLDER_TEXT = "[user interrupted]"
@@ -63,7 +58,7 @@ async function findEmptyMessageIdsFromSDK(
     const response = (await client.session.messages({
       path: { id: sessionID },
     })) as { data?: SDKMessage[] }
-    const messages = normalizeSDKResponse(response, [] as SDKMessage[], { preferResponseOnMissingData: true })
+    const messages = shared.normalizeSDKResponse(response, [] as SDKMessage[], { preferResponseOnMissingData: true })
 
     const emptyIds: string[] = []
     for (const message of messages) {
@@ -84,9 +79,9 @@ export async function sanitizeEmptyMessagesBeforeSummarize(
   sessionID: string,
   client?: OpencodeClient,
 ): Promise<number> {
-  if (client && isSqliteBackend()) {
+  if (client && opencodeStorageDetection.isSqliteBackend()) {
     const emptyMessageIds = await findEmptyMessageIdsFromSDK(client, sessionID)
-    const emptyTextPartIds = await findMessagesWithEmptyTextPartsFromSDK(client, sessionID)
+    const emptyTextPartIds = await emptyTextStorage.findMessagesWithEmptyTextPartsFromSDK(client, sessionID)
     const allIds = [...new Set([...emptyMessageIds, ...emptyTextPartIds])]
     if (allIds.length === 0) {
       return 0
@@ -94,11 +89,11 @@ export async function sanitizeEmptyMessagesBeforeSummarize(
 
     let fixedCount = 0
     for (const messageID of allIds) {
-      const replaced = await replaceEmptyTextPartsAsync(client, sessionID, messageID, PLACEHOLDER_TEXT)
+      const replaced = await emptyTextStorage.replaceEmptyTextPartsAsync(client, sessionID, messageID, PLACEHOLDER_TEXT)
       if (replaced) {
         fixedCount++
       } else {
-        const injected = await injectTextPartAsync(client, sessionID, messageID, PLACEHOLDER_TEXT)
+        const injected = await textPartInjector.injectTextPartAsync(client, sessionID, messageID, PLACEHOLDER_TEXT)
         if (injected) {
           fixedCount++
         }
@@ -106,7 +101,7 @@ export async function sanitizeEmptyMessagesBeforeSummarize(
     }
 
     if (fixedCount > 0) {
-      log("[auto-compact] pre-summarize sanitization fixed empty messages", {
+      logger.log("[auto-compact] pre-summarize sanitization fixed empty messages", {
         sessionID,
         fixedCount,
         totalEmpty: allIds.length,
@@ -116,8 +111,8 @@ export async function sanitizeEmptyMessagesBeforeSummarize(
     return fixedCount
   }
 
-  const emptyMessageIds = findEmptyMessages(sessionID)
-  const emptyTextPartIds = findMessagesWithEmptyTextParts(sessionID)
+  const emptyMessageIds = sessionRecoveryStorage.findEmptyMessages(sessionID)
+  const emptyTextPartIds = sessionRecoveryStorage.findMessagesWithEmptyTextParts(sessionID)
   const allIds = [...new Set([...emptyMessageIds, ...emptyTextPartIds])]
   if (allIds.length === 0) {
     return 0
@@ -125,11 +120,11 @@ export async function sanitizeEmptyMessagesBeforeSummarize(
 
   let fixedCount = 0
   for (const messageID of allIds) {
-    const replaced = replaceEmptyTextParts(messageID, PLACEHOLDER_TEXT)
+    const replaced = sessionRecoveryStorage.replaceEmptyTextParts(messageID, PLACEHOLDER_TEXT)
     if (replaced) {
       fixedCount++
     } else {
-      const injected = injectTextPart(sessionID, messageID, PLACEHOLDER_TEXT)
+      const injected = sessionRecoveryStorage.injectTextPart(sessionID, messageID, PLACEHOLDER_TEXT)
       if (injected) {
         fixedCount++
       }
@@ -137,7 +132,7 @@ export async function sanitizeEmptyMessagesBeforeSummarize(
   }
 
   if (fixedCount > 0) {
-    log("[auto-compact] pre-summarize sanitization fixed empty messages", {
+    logger.log("[auto-compact] pre-summarize sanitization fixed empty messages", {
       sessionID,
       fixedCount,
       totalEmpty: allIds.length,

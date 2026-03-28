@@ -1,18 +1,5 @@
-import { afterAll, describe, expect, test, mock } from "bun:test"
-
-// Mock connected-providers-cache to prevent local disk cache from polluting test results.
-// Without this, findProviderModelMetadata reads real cached model metadata (e.g., from opencode serve)
-// which causes the "prefers runtime models.dev cache" test to get different values than expected.
-mock.module("./connected-providers-cache", () => ({
-  findProviderModelMetadata: () => undefined,
-  readConnectedProvidersCache: () => null,
-  hasConnectedProvidersCache: () => false,
-  hasProviderModelsCache: () => false,
-}))
-
-afterAll(() => {
-  mock.restore()
-})
+import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test"
+import * as connectedProvidersCache from "./connected-providers-cache"
 
 import {
   getModelCapabilities,
@@ -22,6 +9,20 @@ import {
 import { AGENT_MODEL_REQUIREMENTS, CATEGORY_MODEL_REQUIREMENTS } from "./model-requirements"
 
 describe("getModelCapabilities", () => {
+  let findProviderModelMetadataSpy: ReturnType<typeof spyOn> | undefined
+
+  beforeEach(() => {
+    // Prevent local disk cache from polluting test results.
+    findProviderModelMetadataSpy = spyOn(
+      connectedProvidersCache,
+      "findProviderModelMetadata",
+    ).mockReturnValue(undefined)
+  })
+
+  afterEach(() => {
+    findProviderModelMetadataSpy?.mockRestore()
+  })
+
   const bundledSnapshot: ModelCapabilitiesSnapshot = {
     generatedAt: "2026-03-25T00:00:00.000Z",
     sourceUrl: "https://models.dev/api.json",

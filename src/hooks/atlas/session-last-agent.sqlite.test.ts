@@ -1,18 +1,6 @@
-const { describe, expect, mock, test } = require("bun:test")
-
-mock.module("../../shared/opencode-message-dir", () => ({
-  getMessageDir: () => null,
-}))
-
-mock.module("../../shared/opencode-storage-detection", () => ({
-  isSqliteBackend: () => true,
-}))
-
-mock.module("../../shared/normalize-sdk-response", () => ({
-  normalizeSDKResponse: <TData>(response: { data?: TData }, fallback: TData): TData => response.data ?? fallback,
-}))
-
-const { getLastAgentFromSession } = await import("./session-last-agent")
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test"
+import * as shared from "../../shared"
+import { getLastAgentFromSession } from "./session-last-agent"
 
 function createMockClient(messages: Array<{ info?: { agent?: string } }>) {
   return {
@@ -23,6 +11,16 @@ function createMockClient(messages: Array<{ info?: { agent?: string } }>) {
 }
 
 describe("getLastAgentFromSession sqlite branch", () => {
+  beforeEach(() => {
+    mock.restore()
+    spyOn(shared, "getMessageDir").mockReturnValue(null)
+    spyOn(shared, "isSqliteBackend").mockReturnValue(true)
+  })
+
+  afterEach(() => {
+    mock.restore()
+  })
+
   test("should skip compaction and return the previous real agent from sqlite messages", async () => {
     // given
     const client = createMockClient([

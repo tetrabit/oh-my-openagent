@@ -38,17 +38,18 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
     const eventParts = props?.parts as Array<{ type?: string; text?: string }> | undefined
     const infoParts = info?.parts as Array<{ type?: string; text?: string }> | undefined
     const parts = eventParts && eventParts.length > 0 ? eventParts : infoParts
+    const errorContentResult = containsErrorContent(parts)
+    const hasStructuredMessageError = errorContentResult.hasError
     const retrySignalResult = extractAutoRetrySignal(info)
     const partsText = (parts ?? [])
       .filter((part) => typeof part?.text === "string")
       .map((part) => (part.text ?? "").trim())
       .filter((text) => text.length > 0)
       .join("\n")
-    const retrySignalFromParts = partsText
+    const retrySignalFromParts = !hasStructuredMessageError && partsText
       ? extractAutoRetrySignal({ message: partsText, status: partsText, summary: partsText })?.signal
       : undefined
     const retrySignal = retrySignalResult?.signal ?? retrySignalFromParts
-    const errorContentResult = containsErrorContent(parts)
     const error = info?.error ??
       (errorContentResult.hasError
         ? { name: "MessageContentError", message: errorContentResult.errorMessage || "Message contains error content" }
@@ -97,7 +98,7 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
 
     if (sessionID && role === "assistant" && error) {
       const wasAwaitingFallbackResult = sessionAwaitingFallbackResult.has(sessionID)
-      if (retrySignal) {
+      if (retrySignal && !hasStructuredMessageError) {
         helpers.clearSessionFallbackTimeout(sessionID)
         log(`[${HOOK_NAME}] Provider-managed retry observed in message.updated; not triggering fallback`, {
           sessionID,

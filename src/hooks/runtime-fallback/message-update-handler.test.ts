@@ -1,10 +1,11 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import type { HookDeps, RuntimeFallbackPluginInput } from "./types"
 import type { AutoRetryHelpers } from "./auto-retry"
 import { createFallbackState } from "./fallback-state"
 import { createMessageUpdateHandler } from "./message-update-handler"
 import { hasVisibleAssistantResponse } from "./visible-assistant-response"
 import { extractAutoRetrySignal } from "./error-classifier"
+import { SessionCategoryRegistry } from "../../shared/session-category-registry"
 
 function createContext(messagesResponse: unknown): RuntimeFallbackPluginInput {
   return {
@@ -21,6 +22,14 @@ function createContext(messagesResponse: unknown): RuntimeFallbackPluginInput {
     directory: "/test/dir",
   }
 }
+
+beforeEach(() => {
+  SessionCategoryRegistry.clear()
+})
+
+afterEach(() => {
+  SessionCategoryRegistry.clear()
+})
 
 describe("hasVisibleAssistantResponse", () => {
   it("#given only an old assistant reply before the latest user turn #when visibility is checked #then the stale reply is ignored", async () => {
@@ -247,6 +256,55 @@ describe("createMessageUpdateHandler", () => {
       {
         sessionID,
         model: "anthropic/claude-opus-4-6",
+        source: "message.updated",
+      },
+    ])
+  })
+
+  it("#given mixed assistant text and type:error parts #when message.updated arrives #then fallback is dispatched from explicit error content", async () => {
+    // given
+    const sessionID = "assistant-mixed-error-content"
+    const deps = createDeps({
+      data: [{ info: { role: "user" }, parts: [{ type: "text", text: "run the task" }] }],
+    })
+    deps.pluginConfig = {
+      categories: {
+        test: {
+          fallback_models: ["openai/gpt-5.4"],
+        },
+      },
+    }
+    SessionCategoryRegistry.register(sessionID, "test")
+    deps.sessionStates.set(sessionID, createFallbackState("anthropic/claude-opus-4-6"))
+    const clearCalls: string[] = []
+    const retryCalls: Array<{ sessionID: string; model: string; source: string }> = []
+    const handler = createMessageUpdateHandler(deps, createHelpers(deps, clearCalls, retryCalls))
+
+    // when
+    await handler({
+      info: {
+        sessionID,
+        role: "assistant",
+        model: "anthropic/claude-opus-4-6",
+      },
+      parts: [
+        {
+          type: "text",
+          text: "Too Many Requests: Sorry, you've exhausted this model's rate limit. Please try a different model.",
+        },
+        {
+          type: "error",
+          text: "Rate limit exceeded",
+        },
+      ],
+    })
+
+    // then
+    expect(clearCalls).toEqual([sessionID])
+    expect(retryCalls).toEqual([
+      {
+        sessionID,
+        model: "openai/gpt-5.4",
         source: "message.updated",
       },
     ])

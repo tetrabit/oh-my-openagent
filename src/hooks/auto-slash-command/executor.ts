@@ -1,10 +1,8 @@
 import { dirname } from "path"
-import {
-  resolveCommandsInText,
-  resolveFileReferencesInText,
-} from "../../shared"
-import { discoverAllSkills, type LoadedSkill, type LazyContentLoader } from "../../features/opencode-skill-loader"
-import { discoverCommandsSync } from "../../tools/slashcommand"
+import * as shared from "../../shared"
+import * as opencodeSkillLoader from "../../features/opencode-skill-loader"
+import * as slashcommandTool from "../../tools/slashcommand"
+import type { LoadedSkill, LazyContentLoader } from "../../features/opencode-skill-loader"
 import type { CommandInfo as DiscoveredCommandInfo, CommandMetadata } from "../../tools/slashcommand/types"
 import type { ParsedSlashCommand } from "./types"
 
@@ -46,12 +44,12 @@ export interface ExecutorOptions {
 
 
 async function discoverAllCommands(options?: ExecutorOptions): Promise<CommandInfo[]> {
-  const discoveredCommands = discoverCommandsSync(process.cwd(), {
+  const discoveredCommands = slashcommandTool.discoverCommandsSync(process.cwd(), {
     pluginsEnabled: options?.pluginsEnabled,
     enabledPluginsOverride: options?.enabledPluginsOverride,
   })
 
-  const skills = options?.skills ?? await discoverAllSkills()
+  const skills = options?.skills ?? await opencodeSkillLoader.discoverAllSkills()
   const skillCommands = skills.map(skillToCommandInfo)
 
   const scopeOrder: DiscoveredCommandInfo["scope"][] = ["project", "user", "opencode-project", "opencode", "builtin", "plugin"]
@@ -107,8 +105,8 @@ async function formatCommandTemplate(cmd: CommandInfo, args: string): Promise<st
   }
 
   const commandDir = cmd.path ? dirname(cmd.path) : process.cwd()
-  const withFileRefs = await resolveFileReferencesInText(content, commandDir)
-  const resolvedContent = await resolveCommandsInText(withFileRefs)
+  const withFileRefs = await shared.resolveFileReferencesInText(content, commandDir)
+  const resolvedContent = await shared.resolveCommandsInText(withFileRefs)
   const resolvedArguments = args
   const substitutedContent = resolvedContent
     .replace(/\$\{user_message\}/g, resolvedArguments)

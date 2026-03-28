@@ -1,9 +1,9 @@
 import type { PluginInput } from "@opencode-ai/plugin"
 import type { ImageAttachment, ImageDimensions } from "./types"
-import { parseImageDimensions } from "./image-dimensions"
-import { calculateTargetDimensions, resizeImage } from "./image-resizer"
-import { log } from "../../shared"
-import { getSessionModel } from "../../shared/session-model-state"
+import * as imageDimensions from "./image-dimensions"
+import * as imageResizer from "./image-resizer"
+import * as shared from "../../shared"
+import * as sessionModelState from "../../shared/session-model-state"
 const SUPPORTED_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
 const TOKEN_DIVISOR = 750
 interface ResizeEntry {
@@ -122,7 +122,7 @@ export function createReadImageResizerHook(_ctx: PluginInput) {
         return
       }
 
-      const sessionModel = getSessionModel(input.sessionID)
+      const sessionModel = sessionModelState.getSessionModel(input.sessionID)
       if (sessionModel?.providerID !== "anthropic") {
         return
       }
@@ -142,13 +142,13 @@ export function createReadImageResizerHook(_ctx: PluginInput) {
         const filename = resolveFilename(attachment, index)
 
         try {
-          const originalDims = parseImageDimensions(attachment.url, attachment.mime)
+          const originalDims = imageDimensions.parseImageDimensions(attachment.url, attachment.mime)
           if (!originalDims) {
             entries.push({ filename, originalDims: null, resizedDims: null, status: "unknown-dims" })
             continue
           }
 
-          const targetDims = calculateTargetDimensions(originalDims.width, originalDims.height)
+          const targetDims = imageResizer.calculateTargetDimensions(originalDims.width, originalDims.height)
           if (!targetDims) {
             entries.push({
               filename,
@@ -159,7 +159,7 @@ export function createReadImageResizerHook(_ctx: PluginInput) {
             continue
           }
 
-          const resizedResult = await resizeImage(attachment.url, attachment.mime, targetDims)
+          const resizedResult = await imageResizer.resizeImage(attachment.url, attachment.mime, targetDims)
           if (!resizedResult) {
             entries.push({
               filename,
@@ -179,7 +179,7 @@ export function createReadImageResizerHook(_ctx: PluginInput) {
             status: "resized",
           })
         } catch (error) {
-          log("[read-image-resizer] attachment processing failed", {
+          shared.log("[read-image-resizer] attachment processing failed", {
             error: error instanceof Error ? error.message : String(error),
             filename,
           })

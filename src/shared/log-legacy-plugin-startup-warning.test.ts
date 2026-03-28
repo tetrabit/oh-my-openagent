@@ -1,5 +1,9 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import type { LegacyPluginCheckResult } from "./legacy-plugin-warning"
+import * as legacyPluginWarning from "./legacy-plugin-warning"
+import * as logger from "./logger"
+import * as legacyPluginMigration from "./migrate-legacy-plugin-entry"
+import { logLegacyPluginStartupWarning } from "./log-legacy-plugin-startup-warning"
 
 function createLegacyPluginCheckResult(
   overrides: Partial<LegacyPluginCheckResult> = {},
@@ -13,62 +17,46 @@ function createLegacyPluginCheckResult(
   }
 }
 
-const mockCheckForLegacyPluginEntry = mock(() => createLegacyPluginCheckResult())
-const mockLog = mock(() => {})
-const mockMigrateLegacyPluginEntry = mock(() => false)
-let consoleWarnSpy: ReturnType<typeof spyOn>
-
-mock.module("./legacy-plugin-warning", () => ({
-  checkForLegacyPluginEntry: mockCheckForLegacyPluginEntry,
-}))
-
-mock.module("./logger", () => ({
-  log: mockLog,
-}))
-
-mock.module("./migrate-legacy-plugin-entry", () => ({
-  migrateLegacyPluginEntry: mockMigrateLegacyPluginEntry,
-}))
-
-afterAll(() => {
-  mock.restore()
-})
-
-async function importFreshStartupWarningModule(): Promise<typeof import("./log-legacy-plugin-startup-warning")> {
-  return import(`./log-legacy-plugin-startup-warning?test=${Date.now()}-${Math.random()}`)
-}
-
 describe("logLegacyPluginStartupWarning", () => {
-  beforeEach(() => {
-    mockCheckForLegacyPluginEntry.mockReset()
-    mockLog.mockReset()
-    mockMigrateLegacyPluginEntry.mockReset()
-    consoleWarnSpy = spyOn(console, "warn").mockImplementation(() => {})
+  let checkForLegacyPluginEntrySpy: ReturnType<typeof spyOn>
+  let logSpy: ReturnType<typeof spyOn>
+  let migrateLegacyPluginEntrySpy: ReturnType<typeof spyOn>
+  let consoleWarnSpy: ReturnType<typeof spyOn>
 
-    mockCheckForLegacyPluginEntry.mockReturnValue(createLegacyPluginCheckResult())
-    mockMigrateLegacyPluginEntry.mockReturnValue(false)
+  beforeEach(() => {
+    checkForLegacyPluginEntrySpy = spyOn(
+      legacyPluginWarning,
+      "checkForLegacyPluginEntry",
+    ).mockReturnValue(createLegacyPluginCheckResult())
+    logSpy = spyOn(logger, "log").mockImplementation(() => {})
+    migrateLegacyPluginEntrySpy = spyOn(
+      legacyPluginMigration,
+      "migrateLegacyPluginEntry",
+    ).mockReturnValue(false)
+    consoleWarnSpy = spyOn(console, "warn").mockImplementation(() => {})
   })
 
   afterEach(() => {
+    checkForLegacyPluginEntrySpy?.mockRestore()
+    logSpy?.mockRestore()
+    migrateLegacyPluginEntrySpy?.mockRestore()
     consoleWarnSpy?.mockRestore()
   })
 
   describe("#given OpenCode config contains legacy plugin entries", () => {
-    it("#then logs the legacy entries with canonical replacements", async () => {
+    it("#then logs the legacy entries with canonical replacements", () => {
       //#given
-      mockCheckForLegacyPluginEntry.mockReturnValue(createLegacyPluginCheckResult({
+      checkForLegacyPluginEntrySpy.mockReturnValue(createLegacyPluginCheckResult({
         hasLegacyEntry: true,
         legacyEntries: ["oh-my-opencode", "oh-my-opencode@3.13.1"],
         configPath: "/tmp/opencode.json",
       }))
-      const { logLegacyPluginStartupWarning } = await importFreshStartupWarningModule()
 
       //#when
       logLegacyPluginStartupWarning()
 
       //#then
-      expect(mockLog).toHaveBeenCalledTimes(1)
-      expect(mockLog).toHaveBeenCalledWith(
+      expect(logSpy).toHaveBeenCalledWith(
         "[OhMyOpenCodePlugin] Legacy plugin entry detected in OpenCode config",
         {
           legacyEntries: ["oh-my-opencode", "oh-my-opencode@3.13.1"],
@@ -78,14 +66,13 @@ describe("logLegacyPluginStartupWarning", () => {
       )
     })
 
-    it("#then emits console.warn about the rename", async () => {
+    it("#then emits console.warn about the rename", () => {
       //#given
-      mockCheckForLegacyPluginEntry.mockReturnValue(createLegacyPluginCheckResult({
+      checkForLegacyPluginEntrySpy.mockReturnValue(createLegacyPluginCheckResult({
         hasLegacyEntry: true,
         legacyEntries: ["oh-my-opencode@latest"],
         configPath: "/tmp/opencode.json",
       }))
-      const { logLegacyPluginStartupWarning } = await importFreshStartupWarningModule()
 
       //#when
       logLegacyPluginStartupWarning()
@@ -97,47 +84,42 @@ describe("logLegacyPluginStartupWarning", () => {
       expect(firstCall).toContain("oh-my-openagent")
     })
 
-    it("#then attempts auto-migration of the opencode.json", async () => {
+    it("#then attempts auto-migration of the opencode.json", () => {
       //#given
-      mockCheckForLegacyPluginEntry.mockReturnValue(createLegacyPluginCheckResult({
+      checkForLegacyPluginEntrySpy.mockReturnValue(createLegacyPluginCheckResult({
         hasLegacyEntry: true,
         legacyEntries: ["oh-my-opencode"],
         configPath: "/tmp/opencode.json",
       }))
-      const { logLegacyPluginStartupWarning } = await importFreshStartupWarningModule()
 
       //#when
       logLegacyPluginStartupWarning()
 
       //#then
-      expect(mockMigrateLegacyPluginEntry).toHaveBeenCalledWith("/tmp/opencode.json")
+      expect(migrateLegacyPluginEntrySpy).toHaveBeenCalledWith("/tmp/opencode.json")
     })
   })
 
   describe("#given OpenCode config uses only canonical plugin entries", () => {
-    it("#then does not log a startup warning", async () => {
-      //#given
-      const { logLegacyPluginStartupWarning } = await importFreshStartupWarningModule()
-
+    it("#then does not log a startup warning", () => {
       //#when
       logLegacyPluginStartupWarning()
 
       //#then
-      expect(mockLog).not.toHaveBeenCalled()
+      expect(logSpy).not.toHaveBeenCalled()
       expect(consoleWarnSpy).not.toHaveBeenCalled()
     })
   })
 
   describe("#given migration succeeds", () => {
-    it("#then logs success message to console", async () => {
+    it("#then logs success message to console", () => {
       //#given
-      mockCheckForLegacyPluginEntry.mockReturnValue(createLegacyPluginCheckResult({
+      checkForLegacyPluginEntrySpy.mockReturnValue(createLegacyPluginCheckResult({
         hasLegacyEntry: true,
         legacyEntries: ["oh-my-opencode@latest"],
         configPath: "/tmp/opencode.json",
       }))
-      mockMigrateLegacyPluginEntry.mockReturnValue(true)
-      const { logLegacyPluginStartupWarning } = await importFreshStartupWarningModule()
+      migrateLegacyPluginEntrySpy.mockReturnValue(true)
 
       //#when
       logLegacyPluginStartupWarning()

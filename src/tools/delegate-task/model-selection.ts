@@ -2,7 +2,7 @@ import type { FallbackEntry } from "../../shared/model-requirements"
 import { normalizeModel } from "../../shared/model-normalization"
 import { fuzzyMatchModel } from "../../shared/model-availability"
 import { transformModelForProvider } from "../../shared/provider-model-id-transform"
-import { hasConnectedProvidersCache, hasProviderModelsCache, readConnectedProvidersCache } from "../../shared/connected-providers-cache"
+import * as connectedProvidersCache from "../../shared/connected-providers-cache"
 import { log } from "../../shared/logger"
 import { parseModelString, parseVariantFromModelID } from "./model-string-parser"
 
@@ -52,6 +52,7 @@ export function resolveModelForDelegateTask(input: {
   isUserConfiguredCategoryModel?: boolean
   fallbackChain?: FallbackEntry[]
   availableModels: Set<string>
+  connectedProvidersOverride?: string[] | null
   systemDefaultModel?: string
 }): { model: string; variant?: string; fallbackEntry?: FallbackEntry; matchedFallback?: boolean } | { skipped: true } | undefined {
   const userModel = normalizeModel(input.userModel)
@@ -59,11 +60,26 @@ export function resolveModelForDelegateTask(input: {
     return { model: userModel }
   }
 
-  const connectedProviders = input.availableModels.size === 0 ? readConnectedProvidersCache() : null
+  const connectedProviders = input.availableModels.size === 0
+    ? (input.connectedProvidersOverride !== undefined
+      ? input.connectedProvidersOverride
+      : connectedProvidersCache.readConnectedProvidersCache())
+    : null
+
+  const hasProviderModelsCache = input.connectedProvidersOverride !== undefined
+    ? true
+    : connectedProvidersCache.hasProviderModelsCache()
+  const hasConnectedProvidersCache = input.connectedProvidersOverride !== undefined
+    ? true
+    : connectedProvidersCache.hasConnectedProvidersCache()
 
   // Before provider cache is created (first run), skip model resolution entirely.
   // OpenCode will use its system default model when no model is specified in the prompt.
-  if (input.availableModels.size === 0 && !hasProviderModelsCache() && !hasConnectedProvidersCache()) {
+  if (
+    input.availableModels.size === 0
+    && !hasProviderModelsCache
+    && !hasConnectedProvidersCache
+  ) {
     return { skipped: true }
   }
 

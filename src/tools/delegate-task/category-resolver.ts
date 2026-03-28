@@ -43,9 +43,17 @@ export async function resolveCategoryExecution(
   inheritedModel: string | undefined,
   systemDefaultModel: string | undefined
 ): Promise<CategoryResolutionResult> {
-  const { client, userCategories, sisyphusJuniorModel } = executorCtx
+  const {
+    client,
+    userCategories,
+    sisyphusJuniorModel,
+    availableModelsOverride,
+    connectedProvidersOverride,
+  } = executorCtx
 
-  const availableModels = await getAvailableModelsForDelegateTask(client)
+  const availableModels = availableModelsOverride
+    ? new Set(availableModelsOverride)
+    : await getAvailableModelsForDelegateTask(client)
 
   const categoryName = args.category!
   const enabledCategories = mergeCategories(userCategories)
@@ -128,6 +136,7 @@ Available categories: ${allCategoryNames}`,
       isUserConfiguredCategoryModel: resolved.isUserConfiguredModel,
       fallbackChain: requirement.fallbackChain,
       availableModels,
+      connectedProvidersOverride,
       systemDefaultModel,
     })
 

@@ -2483,10 +2483,10 @@ describe("sisyphus-task", () => {
         toolContext
       )
 
-      // then - model should be anthropic/claude-haiku-4-5 from DEFAULT_CATEGORIES
+      // then - model should come from quick category default resolution
       //         NOT anthropic/claude-sonnet-4-6 (system default)
-      expect(launchInput.model.providerID).toBe("anthropic")
-      expect(launchInput.model.modelID).toBe("claude-haiku-4-5")
+      expect(launchInput.model.providerID).toBe("openai")
+      expect(launchInput.model.modelID).toBe("gpt-5.4-mini")
     })
 
     test("category delegation ignores UI-selected (Kimi) system default model", async () => {

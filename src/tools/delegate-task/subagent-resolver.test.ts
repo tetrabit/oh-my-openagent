@@ -1,61 +1,8 @@
 declare const require: (name: string) => any
-const { describe, test, expect, beforeEach, afterEach, spyOn, mock } = require("bun:test")
+const { describe, test, expect, beforeEach, mock } = require("bun:test")
+import { resolveSubagentExecution } from "./subagent-resolver"
 import type { DelegateTaskArgs } from "./types"
 import type { ExecutorContext } from "./executor-types"
-
-let moduleImportCounter = 0
-let resolveSubagentExecution: typeof import("./subagent-resolver").resolveSubagentExecution
-let connectedProvidersCache: typeof import("../../shared/connected-providers-cache")
-const logMock = mock(() => {})
-
-function mockModuleVariants(
-  specifier: string,
-  filePath: string,
-  moduleValue: unknown,
-): void {
-  const factory = () => moduleValue
-  mock.module(specifier, factory)
-  mock.module(new URL(filePath, import.meta.url).href, factory)
-}
-
-async function prepareSubagentResolverTestModules(): Promise<void> {
-  mock.restore()
-  moduleImportCounter += 1
-  const sharedModelResolver = await import(`../../shared/model-resolver?test=${moduleImportCounter}`)
-  const sharedModelAvailability = await import(`../../shared/model-availability?test=${moduleImportCounter}`)
-  const sharedProviderTransform = await import(`../../shared/provider-model-id-transform?test=${moduleImportCounter}`)
-  const sharedFallbackChainModule = await import(`../../shared/fallback-chain-from-models?test=${moduleImportCounter}`)
-  connectedProvidersCache = await import(`../../shared/connected-providers-cache?test=${moduleImportCounter}`)
-  mockModuleVariants("../../shared", "../../shared/index.ts", {
-    normalizeSDKResponse: (result: unknown, fallback: unknown) => {
-      if (Array.isArray(result)) {
-        return result
-      }
-
-      if (
-        result
-        && typeof result === "object"
-        && "data" in result
-        && Array.isArray((result as { data?: unknown }).data)
-      ) {
-        return (result as { data: unknown[] }).data
-      }
-
-      return fallback
-    },
-  })
-  mockModuleVariants("../../shared/model-resolver", "../../shared/model-resolver.ts", sharedModelResolver)
-  mockModuleVariants("../../shared/model-availability", "../../shared/model-availability.ts", sharedModelAvailability)
-  mockModuleVariants("../../shared/provider-model-id-transform", "../../shared/provider-model-id-transform.ts", sharedProviderTransform)
-  mockModuleVariants("../../shared/fallback-chain-from-models", "../../shared/fallback-chain-from-models.ts", sharedFallbackChainModule)
-  mockModuleVariants("../../shared/logger", "../../shared/logger.ts", { log: logMock })
-  mockModuleVariants("../../shared/connected-providers-cache", "../../shared/connected-providers-cache.ts", connectedProvidersCache)
-  const availableModelsModule = await import(`./available-models?test=${moduleImportCounter}`)
-  const modelSelectionModule = await import(`./model-selection?test=${moduleImportCounter}`)
-  mockModuleVariants("./available-models", "./available-models.ts", availableModelsModule)
-  mockModuleVariants("./model-selection", "./model-selection.ts", modelSelectionModule)
-  ;({ resolveSubagentExecution } = await import(`./subagent-resolver?test=${moduleImportCounter}`))
-}
 
 function createBaseArgs(overrides?: Partial<DelegateTaskArgs>): DelegateTaskArgs {
   return {
@@ -82,17 +29,14 @@ function createExecutorContext(
     client,
     manager: {} as ExecutorContext["manager"],
     directory: "/tmp/test",
+    connectedProvidersOverride: null,
+    availableModelsOverride: new Set(),
     ...overrides,
   }
 }
 
 describe("resolveSubagentExecution", () => {
-  beforeEach(async () => {
-    await prepareSubagentResolverTestModules()
-    logMock.mockClear()
-  })
-
-  afterEach(() => {
+  beforeEach(() => {
     mock.restore()
   })
 
@@ -129,15 +73,15 @@ describe("resolveSubagentExecution", () => {
 
   test("normalizes matched agent model string before returning categoryModel", async () => {
     //#given
-    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { openai: ["grok-3", "gpt-5.3-codex"] },
-      connected: ["openai"],
-      updatedAt: "2026-03-03T00:00:00.000Z",
-    })
     const args = createBaseArgs({ subagent_type: "oracle" })
-    const executorCtx = createExecutorContext(async () => ([
-      { name: "oracle", mode: "subagent", model: "openai/gpt-5.3-codex" },
-    ]))
+    const executorCtx = createExecutorContext(
+      async () => ([
+        { name: "oracle", mode: "subagent", model: "openai/gpt-5.3-codex" },
+      ]),
+      {
+        availableModelsOverride: new Set(["openai/gpt-5.3-codex"]),
+      },
+    )
 
     //#when
     const result = await resolveSubagentExecution(args, executorCtx, "sisyphus", "deep")
@@ -145,28 +89,23 @@ describe("resolveSubagentExecution", () => {
     //#then
     expect(result.error).toBeUndefined()
     expect(result.categoryModel).toEqual({ providerID: "openai", modelID: "gpt-5.3-codex" })
-    cacheSpy.mockRestore()
   })
 
   test("uses agent override fallback_models for subagent runtime fallback chain", async () => {
     //#given
-    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { quotio: ["claude-haiku-4-5"] },
-      connected: ["quotio"],
-      updatedAt: "2026-03-03T00:00:00.000Z",
-    })
     const args = createBaseArgs({ subagent_type: "explore" })
     const executorCtx = createExecutorContext(
       async () => ([
         { name: "explore", mode: "subagent", model: "quotio/claude-haiku-4-5" },
       ]),
       {
+        connectedProvidersOverride: ["quotio"],
         agentOverrides: {
           explore: {
             fallback_models: ["quotio/gpt-5.2", "glm-5(max)"],
           },
         } as ExecutorContext["agentOverrides"],
-      }
+      },
     )
 
     //#when
@@ -184,24 +123,19 @@ describe("resolveSubagentExecution", () => {
       expect.objectContaining({
         model: "glm-5",
         variant: "max",
-      })
+      }),
     )
-    cacheSpy.mockRestore()
   })
 
   test("uses category fallback_models when agent override points at category", async () => {
     //#given
-    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { anthropic: ["claude-haiku-4-5"] },
-      connected: ["anthropic"],
-      updatedAt: "2026-03-03T00:00:00.000Z",
-    })
     const args = createBaseArgs({ subagent_type: "explore" })
     const executorCtx = createExecutorContext(
       async () => ([
         { name: "explore", mode: "subagent", model: "quotio/claude-haiku-4-5" },
       ]),
       {
+        connectedProvidersOverride: ["anthropic"],
         agentOverrides: {
           explore: {
             category: "research",
@@ -212,7 +146,7 @@ describe("resolveSubagentExecution", () => {
             fallback_models: ["anthropic/claude-haiku-4-5"],
           },
         } as ExecutorContext["userCategories"],
-      }
+      },
     )
 
     //#when
@@ -223,23 +157,18 @@ describe("resolveSubagentExecution", () => {
     expect(result.fallbackChain).toEqual([
       { providers: ["anthropic"], model: "claude-haiku-4-5", variant: undefined },
     ])
-    cacheSpy.mockRestore()
   })
 
   test("promotes object-style fallback model settings to categoryModel when subagent fallback becomes initial model", async () => {
     //#given
-    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { openai: ["gpt-5.4"] },
-      connected: ["openai"],
-      updatedAt: "2026-03-03T00:00:00.000Z",
-    })
-    const connectedSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["openai"])
     const args = createBaseArgs({ subagent_type: "explore" })
     const executorCtx = createExecutorContext(
       async () => ([
         { name: "explore", mode: "subagent", model: "quotio/claude-haiku-4-5-unavailable" },
       ]),
       {
+        connectedProvidersOverride: ["openai"],
+        availableModelsOverride: new Set(["openai/gpt-5.4"]),
         agentOverrides: {
           explore: {
             fallback_models: [
@@ -255,7 +184,7 @@ describe("resolveSubagentExecution", () => {
             ],
           },
         } as ExecutorContext["agentOverrides"],
-      }
+      },
     )
 
     //#when
@@ -273,24 +202,17 @@ describe("resolveSubagentExecution", () => {
       maxTokens: 2048,
       thinking: { type: "disabled" },
     })
-    cacheSpy.mockRestore()
-    connectedSpy.mockRestore()
   })
 
   test("does not apply object-style fallback settings when the subagent primary model matches directly", async () => {
     //#given
-    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { openai: ["gpt-5.4-preview"] },
-      connected: ["openai"],
-      updatedAt: "2026-03-03T00:00:00.000Z",
-    })
-    const connectedSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["openai"])
     const args = createBaseArgs({ subagent_type: "explore" })
     const executorCtx = createExecutorContext(
       async () => ([
         { name: "explore", mode: "subagent", model: "openai/gpt-5.4-preview" },
       ]),
       {
+        availableModelsOverride: new Set(["openai/gpt-5.4-preview"]),
         agentOverrides: {
           explore: {
             fallback_models: [
@@ -302,7 +224,7 @@ describe("resolveSubagentExecution", () => {
             ],
           },
         } as ExecutorContext["agentOverrides"],
-      }
+      },
     )
 
     //#when
@@ -314,24 +236,18 @@ describe("resolveSubagentExecution", () => {
       providerID: "openai",
       modelID: "gpt-5.4-preview",
     })
-    cacheSpy.mockRestore()
-    connectedSpy.mockRestore()
   })
 
   test("matches promoted fallback settings after fuzzy model resolution", async () => {
     //#given
-    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { openai: ["gpt-5.4-preview"] },
-      connected: ["openai"],
-      updatedAt: "2026-03-03T00:00:00.000Z",
-    })
-    const connectedSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["openai"])
     const args = createBaseArgs({ subagent_type: "explore" })
     const executorCtx = createExecutorContext(
       async () => ([
         { name: "explore", mode: "subagent", model: "quotio/claude-haiku-4-5-unavailable" },
       ]),
       {
+        availableModelsOverride: new Set(["openai/gpt-5.4-preview"]),
+        connectedProvidersOverride: ["openai"],
         agentOverrides: {
           explore: {
             fallback_models: [
@@ -347,7 +263,7 @@ describe("resolveSubagentExecution", () => {
             ],
           },
         } as ExecutorContext["agentOverrides"],
-      }
+      },
     )
 
     //#when
@@ -365,24 +281,18 @@ describe("resolveSubagentExecution", () => {
       maxTokens: 2222,
       thinking: { type: "disabled" },
     })
-    cacheSpy.mockRestore()
-    connectedSpy.mockRestore()
   })
 
   test("prefers exact promoted fallback match over earlier fuzzy prefix match", async () => {
     //#given
-    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { openai: ["gpt-5.4-preview"] },
-      connected: ["openai"],
-      updatedAt: "2026-03-03T00:00:00.000Z",
-    })
-    const connectedSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["openai"])
     const args = createBaseArgs({ subagent_type: "explore" })
     const executorCtx = createExecutorContext(
       async () => ([
         { name: "explore", mode: "subagent", model: "quotio/claude-haiku-4-5-unavailable" },
       ]),
       {
+        availableModelsOverride: new Set(["openai/gpt-5.4-preview"]),
+        connectedProvidersOverride: ["openai"],
         agentOverrides: {
           explore: {
             fallback_models: [
@@ -399,7 +309,7 @@ describe("resolveSubagentExecution", () => {
             ],
           },
         } as ExecutorContext["agentOverrides"],
-      }
+      },
     )
 
     //#when
@@ -413,24 +323,18 @@ describe("resolveSubagentExecution", () => {
       variant: "max",
       reasoningEffort: "high",
     })
-    cacheSpy.mockRestore()
-    connectedSpy.mockRestore()
   })
 
   test("matches promoted fallback settings when fuzzy resolution extends configured model without hyphen", async () => {
     //#given
-    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { openai: ["gpt-5.4o"] },
-      connected: ["openai"],
-      updatedAt: "2026-03-03T00:00:00.000Z",
-    })
-    const connectedSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["openai"])
     const args = createBaseArgs({ subagent_type: "explore" })
     const executorCtx = createExecutorContext(
       async () => ([
         { name: "explore", mode: "subagent", model: "quotio/claude-haiku-4-5-unavailable" },
       ]),
       {
+        availableModelsOverride: new Set(["openai/gpt-5.4o"]),
+        connectedProvidersOverride: ["openai"],
         agentOverrides: {
           explore: {
             fallback_models: [
@@ -442,7 +346,7 @@ describe("resolveSubagentExecution", () => {
             ],
           },
         } as ExecutorContext["agentOverrides"],
-      }
+      },
     )
 
     //#when
@@ -456,23 +360,18 @@ describe("resolveSubagentExecution", () => {
       variant: "low",
       reasoningEffort: "high",
     })
-    cacheSpy.mockRestore()
-    connectedSpy.mockRestore()
   })
 
   test("does not use unavailable matchedAgent.model as fallback for custom subagent", async () => {
     //#given
-    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { minimaxi: ["MiniMax-M2.7"] },
-      connected: ["minimaxi"],
-      updatedAt: "2026-03-03T00:00:00.000Z",
-    })
-    const connectedSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["minimaxi"])
     const args = createBaseArgs({ subagent_type: "my-custom-agent" })
     const executorCtx = createExecutorContext(
       async () => ([
         { name: "my-custom-agent", mode: "subagent", model: "minimaxi/MiniMax-M2.7-highspeed" },
       ]),
+      {
+        availableModelsOverride: new Set(["minimaxi/MiniMax-M2.7"]),
+      },
     )
 
     //#when
@@ -481,23 +380,18 @@ describe("resolveSubagentExecution", () => {
     //#then
     expect(result.error).toBeUndefined()
     expect(result.categoryModel?.modelID).not.toBe("MiniMax-M2.7-highspeed")
-    cacheSpy.mockRestore()
-    connectedSpy.mockRestore()
   })
 
   test("uses matchedAgent.model as fallback when model is available", async () => {
     //#given
-    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { minimaxi: ["MiniMax-M2.7-highspeed"] },
-      connected: ["minimaxi"],
-      updatedAt: "2026-03-03T00:00:00.000Z",
-    })
-    const connectedSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["minimaxi"])
     const args = createBaseArgs({ subagent_type: "my-custom-agent" })
     const executorCtx = createExecutorContext(
       async () => ([
         { name: "my-custom-agent", mode: "subagent", model: "minimaxi/MiniMax-M2.7-highspeed" },
       ]),
+      {
+        availableModelsOverride: new Set(["minimaxi/MiniMax-M2.7-highspeed"]),
+      },
     )
 
     //#when
@@ -506,24 +400,18 @@ describe("resolveSubagentExecution", () => {
     //#then
     expect(result.error).toBeUndefined()
     expect(result.categoryModel).toEqual({ providerID: "minimaxi", modelID: "MiniMax-M2.7-highspeed" })
-    cacheSpy.mockRestore()
-    connectedSpy.mockRestore()
   })
 
   test("prefers the most specific prefix match when fallback entries share a prefix", async () => {
     //#given
-    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { openai: ["gpt-4o-preview"] },
-      connected: ["openai"],
-      updatedAt: "2026-03-03T00:00:00.000Z",
-    })
-    const connectedSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["openai"])
     const args = createBaseArgs({ subagent_type: "explore" })
     const executorCtx = createExecutorContext(
       async () => ([
         { name: "explore", mode: "subagent", model: "quotio/claude-haiku-4-5-unavailable" },
       ]),
       {
+        availableModelsOverride: new Set(["openai/gpt-4o-preview"]),
+        connectedProvidersOverride: ["openai"],
         agentOverrides: {
           explore: {
             fallback_models: [
@@ -540,7 +428,7 @@ describe("resolveSubagentExecution", () => {
             ],
           },
         } as ExecutorContext["agentOverrides"],
-      }
+      },
     )
 
     //#when
@@ -554,7 +442,5 @@ describe("resolveSubagentExecution", () => {
       variant: "max",
       reasoningEffort: "high",
     })
-    cacheSpy.mockRestore()
-    connectedSpy.mockRestore()
   })
 })

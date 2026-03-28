@@ -1,6 +1,6 @@
-import { checkForLegacyPluginEntry } from "./legacy-plugin-warning"
-import { log } from "./logger"
-import { migrateLegacyPluginEntry } from "./migrate-legacy-plugin-entry"
+import * as legacyPluginWarning from "./legacy-plugin-warning"
+import * as logger from "./logger"
+import * as legacyPluginMigration from "./migrate-legacy-plugin-entry"
 import { LEGACY_PLUGIN_NAME, PLUGIN_NAME } from "./plugin-identity"
 
 function toCanonicalEntry(entry: string): string {
@@ -16,14 +16,14 @@ function toCanonicalEntry(entry: string): string {
 }
 
 export function logLegacyPluginStartupWarning(): void {
-  const result = checkForLegacyPluginEntry()
+  const result = legacyPluginWarning.checkForLegacyPluginEntry()
   if (!result.hasLegacyEntry) {
     return
   }
 
   const suggestedEntries = result.legacyEntries.map(toCanonicalEntry)
 
-  log("[OhMyOpenCodePlugin] Legacy plugin entry detected in OpenCode config", {
+  logger.log("[OhMyOpenCodePlugin] Legacy plugin entry detected in OpenCode config", {
     legacyEntries: result.legacyEntries,
     suggestedEntries,
     hasCanonicalEntry: result.hasCanonicalEntry,
@@ -35,7 +35,7 @@ export function logLegacyPluginStartupWarning(): void {
     + ` Attempting auto-migration...`,
   )
 
-  const migrated = migrateLegacyPluginEntry(result.configPath!)
+  const migrated = legacyPluginMigration.migrateLegacyPluginEntry(result.configPath!)
   if (migrated) {
     console.warn(`[oh-my-openagent] Auto-migrated opencode.json: ${result.legacyEntries.join(", ")} -> ${suggestedEntries.join(", ")}`)
   } else {

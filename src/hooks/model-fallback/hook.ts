@@ -1,9 +1,9 @@
 import type { FallbackEntry } from "../../shared/model-requirements"
 import { getAgentConfigKey } from "../../shared/agent-display-names"
 import { AGENT_MODEL_REQUIREMENTS } from "../../shared/model-requirements"
-import { readConnectedProvidersCache, readProviderModelsCache } from "../../shared/connected-providers-cache"
-import { selectFallbackProvider } from "../../shared/model-error-classifier"
-import { transformModelForProvider } from "../../shared/provider-model-id-transform"
+import * as connectedProvidersCache from "../../shared/connected-providers-cache"
+import * as modelErrorClassifier from "../../shared/model-error-classifier"
+import * as providerModelIdTransform from "../../shared/provider-model-id-transform"
 import { log } from "../../shared/logger"
 import { getTaskToastManager } from "../../features/task-toast-manager"
 import type { ChatMessageInput, ChatMessageHandlerOutput } from "../../plugin/chat-message"
@@ -128,8 +128,8 @@ export function getNextFallback(
 
   const { fallbackChain } = state
 
-  const providerModelsCache = readProviderModelsCache()
-  const connectedProviders = providerModelsCache?.connected ?? readConnectedProvidersCache()
+  const providerModelsCache = connectedProvidersCache.readProviderModelsCache()
+  const connectedProviders = providerModelsCache?.connected ?? connectedProvidersCache.readConnectedProvidersCache()
   const connectedSet = connectedProviders
     ? new Set(connectedProviders.map((provider) => provider.toLowerCase()))
     : null
@@ -157,8 +157,8 @@ export function getNextFallback(
       continue
     }
 
-    const providerID = selectFallbackProvider(fallback.providers, state.providerID)
-    const modelID = transformModelForProvider(providerID, fallback.model)
+    const providerID = modelErrorClassifier.selectFallbackProvider(fallback.providers, state.providerID)
+    const modelID = providerModelIdTransform.transformModelForProvider(providerID, fallback.model)
 
     const isNoOpFallback =
       providerID.toLowerCase() === state.providerID.toLowerCase() &&

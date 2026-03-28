@@ -1,40 +1,9 @@
-import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test"
 import type { PluginInput } from "@opencode-ai/plugin"
-import * as originalExecutor from "./executor"
-import * as originalParser from "./parser"
-import * as originalLogger from "../../shared/logger"
-
-const executeCompactMock = mock(async () => {})
-const getLastAssistantMock = mock(async () => ({
-  info: {
-    providerID: "anthropic",
-    modelID: "claude-sonnet-4-6",
-  },
-  hasContent: true,
-}))
-const parseAnthropicTokenLimitErrorMock = mock(() => ({
-  providerID: "anthropic",
-  modelID: "claude-sonnet-4-6",
-}))
-
-mock.module("./executor", () => ({
-  executeCompact: executeCompactMock,
-  getLastAssistant: getLastAssistantMock,
-}))
-
-mock.module("./parser", () => ({
-  parseAnthropicTokenLimitError: parseAnthropicTokenLimitErrorMock,
-}))
-
-mock.module("../../shared/logger", () => ({
-  log: () => {},
-}))
-
-afterAll(() => {
-  mock.module("./executor", () => originalExecutor)
-  mock.module("./parser", () => originalParser)
-  mock.module("../../shared/logger", () => originalLogger)
-})
+import * as recoveryExecutor from "./executor"
+import * as recoveryParser from "./parser"
+import * as sharedLogger from "../../shared/logger"
+import { createAnthropicContextWindowLimitRecoveryHook } from "./recovery-hook"
 
 function createMockContext(): PluginInput {
   return {
@@ -78,20 +47,40 @@ function setupDelayedTimeoutMocks(): {
 }
 
 describe("createAnthropicContextWindowLimitRecoveryHook", () => {
+  let executeCompactSpy: ReturnType<typeof spyOn>
+  let getLastAssistantSpy: ReturnType<typeof spyOn>
+  let parseAnthropicTokenLimitErrorSpy: ReturnType<typeof spyOn>
+  let loggerSpy: ReturnType<typeof spyOn>
+
   beforeEach(() => {
-    executeCompactMock.mockClear()
-    getLastAssistantMock.mockClear()
-    parseAnthropicTokenLimitErrorMock.mockClear()
+    executeCompactSpy = spyOn(recoveryExecutor, "executeCompact").mockResolvedValue(undefined)
+    getLastAssistantSpy = spyOn(recoveryExecutor, "getLastAssistant").mockResolvedValue({
+      info: {
+        providerID: "anthropic",
+        modelID: "claude-sonnet-4-6",
+      },
+      hasContent: true,
+    })
+    parseAnthropicTokenLimitErrorSpy = spyOn(
+      recoveryParser,
+      "parseAnthropicTokenLimitError",
+    ).mockReturnValue({
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4-6",
+    })
+    loggerSpy = spyOn(sharedLogger, "log").mockImplementation(() => {})
   })
 
   afterEach(() => {
-    mock.restore()
+    executeCompactSpy?.mockRestore()
+    getLastAssistantSpy?.mockRestore()
+    parseAnthropicTokenLimitErrorSpy?.mockRestore()
+    loggerSpy?.mockRestore()
   })
 
   test("cancels pending timer when session.idle handles compaction first", async () => {
     //#given
     const { restore, getClearTimeoutCalls } = setupDelayedTimeoutMocks()
-    const { createAnthropicContextWindowLimitRecoveryHook } = await import("./recovery-hook")
     const hook = createAnthropicContextWindowLimitRecoveryHook(createMockContext())
 
     try {
@@ -112,8 +101,8 @@ describe("createAnthropicContextWindowLimitRecoveryHook", () => {
 
       //#then
       expect(getClearTimeoutCalls()).toEqual([1 as ReturnType<typeof setTimeout>])
-      expect(executeCompactMock).toHaveBeenCalledTimes(1)
-      expect(executeCompactMock.mock.calls[0]?.[0]).toBe("session-race")
+      expect(executeCompactSpy).toHaveBeenCalledTimes(1)
+      expect(executeCompactSpy.mock.calls[0]?.[0]).toBe("session-race")
     } finally {
       restore()
     }
@@ -122,7 +111,7 @@ describe("createAnthropicContextWindowLimitRecoveryHook", () => {
   test("does not treat empty summary assistant messages as successful compaction", async () => {
     //#given
     const { restore, getClearTimeoutCalls } = setupDelayedTimeoutMocks()
-    getLastAssistantMock.mockResolvedValueOnce({
+    getLastAssistantSpy.mockResolvedValueOnce({
       info: {
         summary: true,
         providerID: "anthropic",
@@ -130,7 +119,6 @@ describe("createAnthropicContextWindowLimitRecoveryHook", () => {
       },
       hasContent: false,
     })
-    const { createAnthropicContextWindowLimitRecoveryHook } = await import("./recovery-hook")
     const hook = createAnthropicContextWindowLimitRecoveryHook(createMockContext())
 
     try {
@@ -151,8 +139,8 @@ describe("createAnthropicContextWindowLimitRecoveryHook", () => {
 
       //#then
       expect(getClearTimeoutCalls()).toEqual([1 as ReturnType<typeof setTimeout>])
-      expect(executeCompactMock).toHaveBeenCalledTimes(1)
-      expect(executeCompactMock.mock.calls[0]?.[0]).toBe("session-empty-summary")
+      expect(executeCompactSpy).toHaveBeenCalledTimes(1)
+      expect(executeCompactSpy.mock.calls[0]?.[0]).toBe("session-empty-summary")
     } finally {
       restore()
     }

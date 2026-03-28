@@ -8,7 +8,7 @@ import { AGENT_MODEL_REQUIREMENTS } from "../../shared/model-requirements"
 import { normalizeFallbackModels, flattenToFallbackModelStrings } from "../../shared/model-resolver"
 import { buildFallbackChainFromModels, findMostSpecificFallbackEntry } from "../../shared/fallback-chain-from-models"
 import { getAgentDisplayName, getAgentConfigKey } from "../../shared/agent-display-names"
-import { normalizeSDKResponse } from "../../shared"
+import { normalizeSDKResponse } from "../../shared/normalize-sdk-response"
 import { log } from "../../shared/logger"
 import { getAvailableModelsForDelegateTask } from "./available-models"
 import type { FallbackEntry } from "../../shared/model-requirements"
@@ -21,7 +21,13 @@ export async function resolveSubagentExecution(
   parentAgent: string | undefined,
   categoryExamples: string
 ): Promise<{ agentToUse: string; categoryModel: DelegatedModelConfig | undefined; fallbackChain?: FallbackEntry[]; error?: string }> {
-  const { client, agentOverrides, userCategories } = executorCtx
+  const {
+    client,
+    agentOverrides,
+    userCategories,
+    availableModelsOverride,
+    connectedProvidersOverride,
+  } = executorCtx
 
   if (!args.subagent_type?.trim()) {
     return { agentToUse: "", categoryModel: undefined, error: `Agent name cannot be empty.` }
@@ -60,9 +66,15 @@ Create the work plan directly - that's your job as the planning agent.`,
       mode?: "subagent" | "primary" | "all"
       model?: string | { providerID: string; modelID: string }
     }
-    const agents = normalizeSDKResponse(agentsResult, [] as AgentInfo[], {
+    const normalizedAgents = normalizeSDKResponse(agentsResult, [] as AgentInfo[], {
       preferResponseOnMissingData: true,
     })
+    const rawAgents = Array.isArray(agentsResult) ? agentsResult : []
+    const agents = (
+      Array.isArray(normalizedAgents) && (normalizedAgents.length > 0 || rawAgents.length === 0)
+        ? normalizedAgents
+        : rawAgents
+    ) as AgentInfo[]
 
     const callableAgents = agents.filter((a) => a.mode !== "primary")
 
@@ -110,7 +122,9 @@ Create the work plan directly - that's your job as the planning agent.`,
       ?? (agentOverride?.category ? userCategories?.[agentOverride.category]?.fallback_models : undefined)
     )
 
-    const availableModels = await getAvailableModelsForDelegateTask(client)
+    const availableModels = availableModelsOverride
+      ? new Set(availableModelsOverride)
+      : await getAvailableModelsForDelegateTask(client)
 
     if (agentOverride?.model || agentCategoryModel || agentRequirement || matchedAgent.model) {
 
@@ -127,6 +141,7 @@ Create the work plan directly - that's your job as the planning agent.`,
         categoryDefaultModel: matchedAgentModelStr,
         fallbackChain: agentRequirement?.fallbackChain,
         availableModels,
+        connectedProvidersOverride,
         systemDefaultModel: undefined,
       })
 

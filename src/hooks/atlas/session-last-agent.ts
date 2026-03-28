@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 
-import { getMessageDir, isSqliteBackend, normalizeSDKResponse } from "../../shared"
+import * as shared from "../../shared"
 
 type SessionMessagesClient = {
   session: {
@@ -42,9 +42,9 @@ export async function getLastAgentFromSession(
   sessionID: string,
   client?: SessionMessagesClient
 ): Promise<string | null> {
-  if (isSqliteBackend() && client) {
+  if (shared.isSqliteBackend() && client) {
     const response = await client.session.messages({ path: { id: sessionID } })
-    const messages = normalizeSDKResponse(response, [] as Array<{ info?: { agent?: string } }>, {
+    const messages = shared.normalizeSDKResponse(response, [] as Array<{ info?: { agent?: string } }>, {
       preferResponseOnMissingData: true,
     })
 
@@ -58,7 +58,7 @@ export async function getLastAgentFromSession(
     return null
   }
 
-  const messageDir = getMessageDir(sessionID)
+  const messageDir = shared.getMessageDir(sessionID)
   if (!messageDir) return null
 
   return getLastAgentFromMessageDir(messageDir)
