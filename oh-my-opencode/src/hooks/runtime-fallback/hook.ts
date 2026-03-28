@@ -40,6 +40,7 @@ export function createRuntimeFallbackHook(
     sessionRetryInFlight: new Set(),
     sessionAwaitingFallbackResult: new Set(),
     sessionFallbackTimeouts: new Map(),
+    sessionTokenRefreshRetryCounts: new Map(),
   }
 
   const helpers = createAutoRetryHelpers(deps)

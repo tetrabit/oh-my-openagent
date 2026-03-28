@@ -2,6 +2,7 @@ import path from "path"
 import { describe, expect, test } from "bun:test"
 import { fileURLToPath } from "url"
 import { Instance } from "../../src/project/instance"
+import { ModelID, ProviderID } from "../../src/provider/schema"
 import { Session } from "../../src/session"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionPrompt } from "../../src/session/prompt"
@@ -173,7 +174,7 @@ describe("session.prompt agent variant", () => {
           const other = await SessionPrompt.prompt({
             sessionID: session.id,
             agent: "build",
-            model: { providerID: "opencode", modelID: "kimi-k2.5-free" },
+            model: { providerID: ProviderID.make("opencode"), modelID: ModelID.make("kimi-k2.5-free") },
             noReply: true,
             parts: [{ type: "text", text: "hello" }],
           })
@@ -187,7 +188,7 @@ describe("session.prompt agent variant", () => {
             parts: [{ type: "text", text: "hello again" }],
           })
           if (match.info.role !== "user") throw new Error("expected user message")
-          expect(match.info.model).toEqual({ providerID: "openai", modelID: "gpt-5.2" })
+          expect(match.info.model).toEqual({ providerID: ProviderID.make("openai"), modelID: ModelID.make("gpt-5.2") })
           expect(match.info.variant).toBe("xhigh")
 
           const override = await SessionPrompt.prompt({
@@ -207,5 +208,106 @@ describe("session.prompt agent variant", () => {
       if (prev === undefined) delete process.env.OPENAI_API_KEY
       else process.env.OPENAI_API_KEY = prev
     }
+  })
+})
+
+describe("session.prompt prompt tombstoning", () => {
+  test("marks superseded queued prompts ignored before they can run later", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        agent: {
+          build: {
+            model: "openai/gpt-5.2",
+          },
+        },
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const queueKey = `runtime-fallback:${session.id}`
+
+        const stale = await SessionPrompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [
+            {
+              type: "text",
+              text: "stale queued prompt",
+              metadata: {
+                opencodePromptQueue: {
+                  supersessionKey: queueKey,
+                  attemptID: "attempt-1",
+                },
+              },
+            },
+          ],
+        })
+
+        const fresh = await SessionPrompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [
+            {
+              type: "text",
+              text: "fallback retry prompt",
+              metadata: {
+                opencodePromptQueue: {
+                  supersessionKey: queueKey,
+                  attemptID: "attempt-2",
+                  supersedePending: "all",
+                },
+              },
+            },
+          ],
+        })
+
+        const staleStored = await MessageV2.get({
+          sessionID: session.id,
+          messageID: stale.info.id,
+        })
+        const freshStored = await MessageV2.get({
+          sessionID: session.id,
+          messageID: fresh.info.id,
+        })
+
+        expect(staleStored.info.role).toBe("user")
+        if (staleStored.info.role !== "user") throw new Error("expected stale user message")
+        expect(staleStored.info.ignored).toBe(true)
+
+        const staleText = staleStored.parts.find((part) => part.type === "text")
+        expect(staleText?.type).toBe("text")
+        if (staleText?.type !== "text") throw new Error("expected stale text part")
+        expect(staleText.ignored).toBe(true)
+
+        const freshText = freshStored.parts.find((part) => part.type === "text")
+        expect(freshText?.type).toBe("text")
+        if (freshText?.type !== "text") throw new Error("expected fresh text part")
+        expect(freshText.ignored).toBeUndefined()
+
+        const history = await MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const modelInput = MessageV2.toModelMessages(history, {
+          api: {
+            npm: "@ai-sdk/openai",
+          },
+          providerID: "openai",
+          id: "gpt-5.2",
+        } as never)
+
+        expect(modelInput).toStrictEqual([
+          {
+            role: "user",
+            content: [{ type: "text", text: "fallback retry prompt" }],
+          },
+        ])
+
+        await Session.remove(session.id)
+      },
+    })
   })
 })

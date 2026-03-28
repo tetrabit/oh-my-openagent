@@ -1,6 +1,7 @@
 import { APICallError } from "ai"
 import { STATUS_CODES } from "http"
 import { iife } from "@/util/iife"
+import type { ProviderID } from "./schema"
 
 export namespace ProviderError {
   // Adapted from overflow detection patterns in:
@@ -12,13 +13,16 @@ export namespace ProviderError {
     /input token count.*exceeds the maximum/i, // Google (Gemini)
     /maximum prompt length is \d+/i, // xAI (Grok)
     /reduce the length of the messages/i, // Groq
-    /maximum context length is \d+ tokens/i, // OpenRouter, DeepSeek
+    /maximum context length is \d+ tokens/i, // OpenRouter, DeepSeek, vLLM
     /exceeds the limit of \d+/i, // GitHub Copilot
     /exceeds the available context size/i, // llama.cpp server
     /greater than the context length/i, // LM Studio
     /context window exceeds limit/i, // MiniMax
     /exceeded model token limit/i, // Kimi For Coding, Moonshot
     /context[_ ]length[_ ]exceeded/i, // Generic fallback
+    /request entity too large/i, // HTTP 413
+    /context length is only \d+ tokens/i, // vLLM
+    /input length.*exceeds.*context length/i, // vLLM
   ]
 
   function isOpenAiErrorRetryable(e: APICallError) {
@@ -39,15 +43,7 @@ export namespace ProviderError {
     return /^4(00|13)\s*(status code)?\s*\(no body\)/i.test(message)
   }
 
-  function error(providerID: string, error: APICallError) {
-    if (providerID.includes("github-copilot") && error.statusCode === 403) {
-      return "Please reauthenticate with the copilot provider to ensure your credentials work properly with OpenCode."
-    }
-
-    return error.message
-  }
-
-  function message(providerID: string, e: APICallError) {
+  function message(providerID: ProviderID, e: APICallError) {
     return iife(() => {
       const msg = e.message
       if (msg === "") {
@@ -59,10 +55,6 @@ export namespace ProviderError {
         return "Unknown error"
       }
 
-      const transformed = error(providerID, e)
-      if (transformed !== msg) {
-        return transformed
-      }
       if (!e.responseBody || (e.statusCode && msg !== STATUS_CODES[e.statusCode])) {
         return msg
       }
@@ -75,6 +67,18 @@ export namespace ProviderError {
           return `${msg}: ${errMsg}`
         }
       } catch {}
+
+      // If responseBody is HTML (e.g. from a gateway or proxy error page),
+      // provide a human-readable message instead of dumping raw markup
+      if (/^\s*<!doctype|^\s*<html/i.test(e.responseBody)) {
+        if (e.statusCode === 401) {
+          return "Unauthorized: request was blocked by a gateway or proxy. Your authentication token may be missing or expired — try running `opencode auth login <your provider URL>` to re-authenticate."
+        }
+        if (e.statusCode === 403) {
+          return "Forbidden: request was blocked by a gateway or proxy. You may not have permission to access this resource — check your account and provider settings."
+        }
+        return msg
+      }
 
       return `${msg}: ${e.responseBody}`
     }).trim()
@@ -96,133 +100,11 @@ export namespace ProviderError {
     return undefined
   }
 
-  function extractTokenCounts(message: string, responseBody?: string) {
-    const n = (value: string) => {
-      const parsed = Number.parseInt(value.replaceAll(",", ""), 10)
-      if (Number.isNaN(parsed)) return undefined
-      return parsed
-    }
-
-    const parse = (text: string) => {
-      const gt = text.match(/(\d[\d,]*)\s*tokens?\s*[>]\s*(\d[\d,]*)/i)
-      if (gt) {
-        return {
-          currentTokens: n(gt[1]),
-          maxTokens: n(gt[2]),
-        }
-      }
-
-      const prompt = text.match(/prompt\s+(\d[\d,]*)\s*tokens?\s*exceeds?\s*(\d[\d,]*)/i)
-      if (prompt) {
-        return {
-          currentTokens: n(prompt[1]),
-          maxTokens: n(prompt[2]),
-        }
-      }
-
-      const maxContext = text.match(/maximum context length is (\d[\d,]*) tokens.*?(\d[\d,]*)/i)
-      if (maxContext) {
-        return {
-          currentTokens: n(maxContext[2]),
-          maxTokens: n(maxContext[1]),
-        }
-      }
-
-      const inputCount = text.match(/input token count.*?(\d[\d,]*).*?maximum.*?(\d[\d,]*)/i)
-      if (inputCount) {
-        return {
-          currentTokens: n(inputCount[1]),
-          maxTokens: n(inputCount[2]),
-        }
-      }
-
-      const maxPrompt = text.match(/maximum prompt length is (\d[\d,]*)/i)
-      if (maxPrompt) {
-        return {
-          maxTokens: n(maxPrompt[1]),
-        }
-      }
-
-      const limit = text.match(/exceeds the limit of (\d[\d,]*)/i)
-      if (limit) {
-        return {
-          maxTokens: n(limit[1]),
-        }
-      }
-    }
-
-    const body = json(responseBody)
-    if (body) {
-      const root = body as Record<string, unknown>
-      const error = typeof root.error === "object" && root.error !== null
-        ? (root.error as Record<string, unknown>)
-        : undefined
-
-      const current = [
-        root.currentTokens,
-        root.current_tokens,
-        root.promptTokens,
-        root.prompt_tokens,
-        root.inputTokens,
-        root.input_tokens,
-        error?.currentTokens,
-        error?.current_tokens,
-        error?.promptTokens,
-        error?.prompt_tokens,
-        error?.inputTokens,
-        error?.input_tokens,
-      ]
-        .flatMap((value) => (typeof value === "number" ? [value] : typeof value === "string" ? [n(value)] : []))
-        .find((value) => value !== undefined)
-
-      const max = [
-        root.maxTokens,
-        root.max_tokens,
-        root.maximumTokens,
-        root.maximum_tokens,
-        root.contextWindow,
-        root.context_window,
-        error?.maxTokens,
-        error?.max_tokens,
-        error?.maximumTokens,
-        error?.maximum_tokens,
-        error?.contextWindow,
-        error?.context_window,
-      ]
-        .flatMap((value) => (typeof value === "number" ? [value] : typeof value === "string" ? [n(value)] : []))
-        .find((value) => value !== undefined)
-
-      if (current !== undefined || max !== undefined) {
-        return {
-          currentTokens: current,
-          maxTokens: max,
-        }
-      }
-
-      const candidates = [
-        typeof root.message === "string" ? root.message : undefined,
-        typeof root.error === "string" ? root.error : undefined,
-        typeof error?.message === "string" ? error.message : undefined,
-        responseBody,
-      ]
-
-      for (const text of candidates) {
-        if (!text) continue
-        const info = parse(text)
-        if (info) return info
-      }
-    }
-
-    return parse(message)
-  }
-
   export type ParsedStreamError =
     | {
         type: "context_overflow"
         message: string
         responseBody: string
-        currentTokens?: number
-        maxTokens?: number
       }
     | {
         type: "api_error"
@@ -240,15 +122,10 @@ export namespace ProviderError {
 
     switch (body?.error?.code) {
       case "context_length_exceeded":
-        const m = typeof body?.error?.message === "string"
-          ? body.error.message
-          : "Input exceeds context window of this model"
-        const tokenInfo = extractTokenCounts(m, responseBody)
         return {
           type: "context_overflow",
-          message: m,
+          message: "Input exceeds context window of this model",
           responseBody,
-          ...tokenInfo,
         }
       case "insufficient_quota":
         return {
@@ -279,8 +156,6 @@ export namespace ProviderError {
         type: "context_overflow"
         message: string
         responseBody?: string
-        currentTokens?: number
-        maxTokens?: number
       }
     | {
         type: "api_error"
@@ -292,15 +167,14 @@ export namespace ProviderError {
         metadata?: Record<string, string>
       }
 
-  export function parseAPICallError(input: { providerID: string; error: APICallError }): ParsedAPICallError {
+  export function parseAPICallError(input: { providerID: ProviderID; error: APICallError }): ParsedAPICallError {
     const m = message(input.providerID, input.error)
-    if (isOverflow(m)) {
-      const tokenInfo = extractTokenCounts(m, input.error.responseBody)
+    const body = json(input.error.responseBody)
+    if (isOverflow(m) || input.error.statusCode === 413 || body?.error?.code === "context_length_exceeded") {
       return {
         type: "context_overflow",
         message: m,
         responseBody: input.error.responseBody,
-        ...tokenInfo,
       }
     }
 

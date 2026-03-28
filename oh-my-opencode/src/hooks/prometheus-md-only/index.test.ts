@@ -1,31 +1,66 @@
 import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test"
-import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { SYSTEM_DIRECTIVE_PREFIX } from "../../shared/system-directive"
-import { clearSessionAgent } from "../../features/claude-code-session-state"
-// Force stable (JSON) mode for tests that rely on message file storage
-mock.module("../../shared/opencode-storage-detection", () => ({
-  isSqliteBackend: () => false,
-  resetSqliteBackendCache: () => {},
-}))
+import {
+  findFirstMessageWithAgent,
+  findNearestMessageWithFields,
+  MESSAGE_STORAGE,
+} from "../../features/hook-message-injector"
 
+mock.module("./agent-resolution", () => ({
+  getAgentFromSession: async (sessionID: string, directory: string) => {
+    const boulderPath = join(directory, ".sisyphus", "boulder.json")
+    if (existsSync(boulderPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(boulderPath, "utf-8")) as {
+          session_ids?: string[]
+          agent?: string
+        }
+        if (parsed.session_ids?.includes(sessionID) && parsed.agent) {
+          return parsed.agent
+        }
+      } catch {
+        // ignore invalid boulder state in tests and fall back to message files
+      }
+    }
+
+    const messageDir = join(MESSAGE_STORAGE, sessionID)
+    return findFirstMessageWithAgent(messageDir) ?? findNearestMessageWithFields(messageDir)?.agent
+  },
+}))
 const { createPrometheusMdOnlyHook } = await import("./index")
-const { MESSAGE_STORAGE } = await import("../../features/hook-message-injector")
 
 describe("prometheus-md-only", () => {
-  const TEST_SESSION_ID = "ses_test_prometheus"
+  let TEST_SESSION_ID: string
   let testMessageDir: string
+  let testWorkspaceDir: string
+  let testAgent: string | undefined
 
   function createMockPluginInput() {
     return {
-      client: {},
-      directory: "/tmp/test",
+      directory: testWorkspaceDir,
+      client: {
+        session: {
+          messages: async () => ({
+            data: [
+              {
+                info: {
+                  ...(testAgent ? { agent: testAgent } : {}),
+                  model: { providerID: "test", modelID: "test-model" },
+                },
+              },
+            ],
+          }),
+        },
+      },
     } as never
   }
 
   function setupMessageStorage(sessionID: string, agent: string | undefined): void {
+    testAgent = agent
     testMessageDir = join(MESSAGE_STORAGE, sessionID)
     mkdirSync(testMessageDir, { recursive: true })
     const messageContent = {
@@ -38,11 +73,24 @@ describe("prometheus-md-only", () => {
     )
   }
 
+  beforeEach(() => {
+    TEST_SESSION_ID = `ses_${randomUUID().replace(/-/g, "")}`
+    testWorkspaceDir = join(tmpdir(), `prometheus-md-only-${randomUUID()}`)
+    testAgent = undefined
+    mkdirSync(testWorkspaceDir, { recursive: true })
+  })
+
   afterEach(() => {
-    clearSessionAgent(TEST_SESSION_ID)
     if (testMessageDir) {
       try {
         rmSync(testMessageDir, { recursive: true, force: true })
+      } catch {
+        // ignore
+      }
+    }
+    if (testWorkspaceDir) {
+      try {
+        rmSync(testWorkspaceDir, { recursive: true, force: true })
       } catch {
         // ignore
       }
@@ -197,7 +245,7 @@ describe("prometheus-md-only", () => {
         callID: "call-1",
       }
       const output = {
-        args: { filePath: "/tmp/test/.sisyphus/plans/work-plan.md" },
+        args: { filePath: join(testWorkspaceDir, ".sisyphus/plans/work-plan.md") },
       }
 
       // when / #then
@@ -215,7 +263,7 @@ describe("prometheus-md-only", () => {
         callID: "call-1",
       }
       const output: { args: Record<string, unknown>; message?: string } = {
-        args: { filePath: "/tmp/test/.sisyphus/plans/work-plan.md" },
+        args: { filePath: join(testWorkspaceDir, ".sisyphus/plans/work-plan.md") },
       }
 
       // when
@@ -237,7 +285,7 @@ describe("prometheus-md-only", () => {
         callID: "call-1",
       }
       const output: { args: Record<string, unknown>; message?: string } = {
-        args: { filePath: "/tmp/test/.sisyphus/drafts/notes.md" },
+        args: { filePath: join(testWorkspaceDir, ".sisyphus/drafts/notes.md") },
       }
 
       // when
@@ -357,7 +405,7 @@ describe("prometheus-md-only", () => {
       expect(output.args.prompt).toContain("DO NOT modify any files")
     })
 
-    test("should inject read-only warning when Prometheus calls task", async () => {
+    test("should inject read-only warning when Prometheus calls task with alternate prompt text", async () => {
       // given
       const hook = createPrometheusMdOnlyHook(createMockPluginInput())
       const input = {

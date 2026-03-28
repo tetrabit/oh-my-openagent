@@ -44,6 +44,7 @@ function createDeps(messagesResponse: unknown): HookDeps {
     sessionAwaitingFallbackResult: new Set(),
     sessionFallbackTimeouts: new Map(),
     sessionStatusRetryKeys: new Map(),
+    sessionTokenRefreshRetryCounts: new Map(),
   }
 }
 
@@ -55,6 +56,8 @@ function createHelpers(clearCalls: string[]): AutoRetryHelpers {
     },
     scheduleSessionFallbackTimeout: () => {},
     autoRetryWithFallback: async () => {},
+    retryCurrentModelAfterTokenRefreshFailure: async () => "allow-fallback",
+    clearTokenRefreshRetryState: () => {},
     resolveAgentForSessionFromContext: async () => undefined,
     cleanupStaleSessions: () => {},
   }

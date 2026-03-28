@@ -11,27 +11,28 @@ PLUGIN_DIST_SRC="$PLUGIN_DIR/dist"
 OPENCODE_BIN_DST="$HOME/.opencode/bin/opencode"
 CACHE_PLUGIN_DST="$HOME/.cache/opencode/node_modules/oh-my-opencode"
 LOCAL_PLUGIN_DST="$HOME/.opencode/node_modules/oh-my-opencode"
-PATCH_DISPLAY_VERSION="1.2.11-nullpatch"
+: "${OPENCODE_UPSTREAM_REPO:=https://github.com/tetrabit/opencode.git}"
+: "${OPENCODE_UPSTREAM_BRANCH:=main}"
 USER_CONFIG_SRC="$ROOT_DIR/oh-my-opencode.json"
 USER_CONFIG_DST="$HOME/.config/opencode/oh-my-opencode.json"
 
 SKIP_BUILD=0
+SKIP_SYNC=0
 NO_BACKUP=0
 WITH_CONFIG=0
 
 usage() {
   cat <<'EOF'
 Usage: ./install.sh [options]
-
 Build and install patched OpenCode + oh-my-opencode into the current user's home directory.
-
 Options:
   --skip-build   Skip build steps and install existing artifacts.
+  --skip-sync    Skip syncing opencode-platform/ from the upstream repo.
   --no-backup    Overwrite without creating timestamped backups.
   --with-config  Also overwrite ~/.config/opencode/oh-my-opencode.json.
   --help         Show this help message.
-
 Notes:
+  - By default this script syncs opencode-platform/ from tetrabit/opencode (main).
   - By default this script does NOT modify files under ~/.config/opencode.
   - It overwrites ~/.opencode/bin/opencode and plugin dist directories.
 EOF
@@ -46,6 +47,35 @@ require_cmd() {
     printf '[install] Missing required command: %s\n' "$1" >&2
     exit 1
   fi
+}
+
+sync_opencode_platform() {
+  local target_dir="$ROOT_DIR/opencode-platform"
+  require_cmd git
+
+  if [[ ! -d "$target_dir/.git" ]]; then
+    log "Initializing opencode-platform/ as a git checkout of $OPENCODE_UPSTREAM_REPO ($OPENCODE_UPSTREAM_BRANCH)"
+    git init "$target_dir"
+    git -C "$target_dir" remote add origin "$OPENCODE_UPSTREAM_REPO"
+  fi
+
+  local current_remote
+  current_remote="$(git -C "$target_dir" remote get-url origin 2>/dev/null || true)"
+  if [[ "$current_remote" != "$OPENCODE_UPSTREAM_REPO" ]]; then
+    log "Updating opencode-platform/ remote to $OPENCODE_UPSTREAM_REPO"
+    git -C "$target_dir" remote set-url origin "$OPENCODE_UPSTREAM_REPO"
+  fi
+
+  log "Fetching $OPENCODE_UPSTREAM_BRANCH from $OPENCODE_UPSTREAM_REPO"
+  git -C "$target_dir" fetch --depth=1 origin "$OPENCODE_UPSTREAM_BRANCH"
+
+  log "Resetting opencode-platform/ to origin/$OPENCODE_UPSTREAM_BRANCH"
+  git -C "$target_dir" reset --hard "origin/$OPENCODE_UPSTREAM_BRANCH"
+  git -C "$target_dir" clean -fdx
+
+  local head_sha
+  head_sha="$(git -C "$target_dir" rev-parse --short HEAD)"
+  log "opencode-platform/ synced to $head_sha"
 }
 
 detect_platform_triplet() {
@@ -118,6 +148,9 @@ while [[ $# -gt 0 ]]; do
     --skip-build)
       SKIP_BUILD=1
       ;;
+    --skip-sync)
+      SKIP_SYNC=1
+      ;;
     --no-backup)
       NO_BACKUP=1
       ;;
@@ -138,6 +171,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 require_cmd bun
+require_cmd npm
 
 if [[ ! -d "$OPENCODE_DIR" || ! -d "$PLUGIN_DIR" ]]; then
   printf '[install] Script must be run from repository root (or symlinked there).\n' >&2
@@ -148,15 +182,21 @@ PLATFORM_TRIPLET="$(detect_platform_triplet)"
 OPENCODE_BIN_SRC="$OPENCODE_DIR/dist/opencode-$PLATFORM_TRIPLET/bin/opencode"
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
+  if [[ "$SKIP_SYNC" -eq 0 ]]; then
+    sync_opencode_platform
+  else
+    log "Skipping opencode-platform sync (--skip-sync)"
+  fi
   log "Installing opencode dependencies"
   (cd "$OPENCODE_DIR" && bun install)
   log "Building opencode binary"
   (cd "$OPENCODE_DIR" && bun run script/build.ts --single --skip-install)
-
   log "Installing oh-my-opencode dependencies"
   (cd "$PLUGIN_DIR" && bun install)
   log "Building oh-my-opencode dist and binaries"
   (cd "$PLUGIN_DIR" && bun run build:all)
+elif [[ "$SKIP_SYNC" -eq 0 ]]; then
+  log "Note: --skip-build implies --skip-sync. Skipping opencode-platform sync."
 fi
 
 if [[ ! -x "$OPENCODE_BIN_SRC" ]]; then
@@ -275,14 +315,41 @@ cat >"$RUNTIME_PACKAGE_JSON" <<EOF
 }
 EOF
 
+# Merge plugin version into cache package.json, preserving existing entries (auth plugins, etc.)
 mkdir -p "$CACHE_STATE_DIR"
-cat >"$CACHE_PACKAGE_JSON" <<EOF
+if [[ -f "$CACHE_PACKAGE_JSON" ]] && command -v python3 >/dev/null 2>&1; then
+  python3 -c "
+import json, sys
+try:
+    with open('$CACHE_PACKAGE_JSON') as f:
+        pkg = json.load(f)
+    deps = pkg.get('dependencies', {})
+    deps['@opencode-ai/plugin'] = '$RUNTIME_PLUGIN_VERSION'
+    pkg['dependencies'] = deps
+    with open('$CACHE_PACKAGE_JSON', 'w') as f:
+        json.dump(pkg, f, indent=2)
+        f.write('\\n')
+except Exception:
+    sys.exit(1)
+" 2>/dev/null || {
+    log "Could not merge cache package.json; overwriting"
+    cat >"$CACHE_PACKAGE_JSON" <<EOF
 {
   "dependencies": {
     "@opencode-ai/plugin": "$RUNTIME_PLUGIN_VERSION"
   }
 }
 EOF
+  }
+else
+  cat >"$CACHE_PACKAGE_JSON" <<EOF
+{
+  "dependencies": {
+    "@opencode-ai/plugin": "$RUNTIME_PLUGIN_VERSION"
+  }
+}
+EOF
+fi
 log "Updated runtime package metadata with @opencode-ai/plugin@$RUNTIME_PLUGIN_VERSION"
 
 log "Install complete"
@@ -302,7 +369,12 @@ for bin_target in "${BIN_TARGETS[@]}"; do
 done
 
 log "Installed binary version: $EXPECTED_VERSION"
-log "Displayed CLI version: $PATCH_DISPLAY_VERSION"
+DISPLAYED_VERSION="$EXPECTED_VERSION"
+case "$DISPLAYED_VERSION" in
+  *-nullpatch) ;;
+  *) DISPLAYED_VERSION="${DISPLAYED_VERSION}-nullpatch" ;;
+esac
+log "Displayed CLI version: $DISPLAYED_VERSION"
 if [[ -n "$ACTIVE_OPENCODE_PATH" ]]; then
   log "Active opencode path: $ACTIVE_OPENCODE_PATH"
 fi

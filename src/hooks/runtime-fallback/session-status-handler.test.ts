@@ -46,6 +46,7 @@ function createDeps(): HookDeps {
     sessionAwaitingFallbackResult: new Set(),
     sessionFallbackTimeouts: new Map(),
     sessionStatusRetryKeys: new Map(),
+    sessionTokenRefreshRetryCounts: new Map(),
   }
 }
 
@@ -59,13 +60,15 @@ function createHelpers(abortCalls: string[], retryCalls: Array<{ sessionID: stri
     autoRetryWithFallback: async (sessionID: string, model: string, _resolvedAgent: string | undefined, source: string) => {
       retryCalls.push({ sessionID, model, source })
     },
+    retryCurrentModelAfterTokenRefreshFailure: async () => "allow-fallback",
+    clearTokenRefreshRetryState: () => {},
     resolveAgentForSessionFromContext: async () => undefined,
     cleanupStaleSessions: () => {},
   }
 }
 
 describe("createSessionStatusHandler", () => {
-  it("#given a pending fallback model #when a new provider cooldown retry arrives #then the handler overrides the pending fallback and advances the chain", async () => {
+  it("#given a pending fallback model #when a provider cooldown retry arrives #then the handler keeps the current model active", async () => {
     // given
     SessionCategoryRegistry.clear()
     const sessionID = "session-status-pending-fallback"
@@ -96,16 +99,13 @@ describe("createSessionStatusHandler", () => {
     })
 
     // then
-    expect(abortCalls).toEqual([sessionID])
-    expect(retryCalls).toEqual([
-      {
-        sessionID,
-        model: "google/gemini-2.5-pro",
-        source: "session.status",
-      },
-    ])
-    expect(state.currentModel).toBe("google/gemini-2.5-pro")
-    expect(state.pendingFallbackModel).toBe("google/gemini-2.5-pro")
+    expect(abortCalls).toEqual([])
+    expect(retryCalls).toEqual([])
+    expect(state.currentModel).toBe("openai/gpt-5.4")
+    expect(state.pendingFallbackModel).toBe("openai/gpt-5.4")
+    expect(deps.sessionStatusRetryKeys.get(sessionID)).toBe(
+      "2:all credentials for model gpt-5.4 are cooling down [retrying]"
+    )
     SessionCategoryRegistry.clear()
   })
 })

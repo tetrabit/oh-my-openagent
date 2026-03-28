@@ -1,7 +1,8 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import type { RuntimeFallbackPluginInput } from "./types"
 import { createRuntimeFallbackHook } from "./hook"
 import { SessionCategoryRegistry } from "../../shared/session-category-registry"
+import * as sharedModule from "../../shared"
 
 function createContext(promptCalls: unknown[]): RuntimeFallbackPluginInput {
   return {
@@ -25,9 +26,17 @@ function createContext(promptCalls: unknown[]): RuntimeFallbackPluginInput {
 }
 
 describe("createRuntimeFallbackHook dispose retry-key cleanup", () => {
+  afterEach(() => {
+    SessionCategoryRegistry.clear()
+  })
+
   it("#given a session.status retry key #when dispose() is called #then the same retry event is not deduplicated afterward", async () => {
     // given
     const promptCalls: unknown[] = []
+    const logCalls: Array<{ msg: string; data?: unknown }> = []
+    const logSpy = spyOn(sharedModule, "log").mockImplementation((msg: string, data?: unknown) => {
+      logCalls.push({ msg, data })
+    })
     const sessionID = "session-dispose-retry-key"
     const hook = createRuntimeFallbackHook(createContext(promptCalls), {
       config: {
@@ -70,7 +79,7 @@ describe("createRuntimeFallbackHook dispose retry-key cleanup", () => {
     }
 
     await hook.event(retryEvent)
-    expect(promptCalls).toHaveLength(1)
+    expect(promptCalls).toHaveLength(0)
 
     // when
     hook.dispose?.()
@@ -83,6 +92,10 @@ describe("createRuntimeFallbackHook dispose retry-key cleanup", () => {
     await hook.event(retryEvent)
 
     // then
-    expect(promptCalls).toHaveLength(2)
+    const retryLogs = logCalls.filter((call) =>
+      call.msg.includes("Observed provider-managed retry in session.status; keeping current model"),
+    )
+    expect(retryLogs).toHaveLength(2)
+    logSpy.mockRestore()
   })
 })

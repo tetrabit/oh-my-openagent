@@ -1393,6 +1393,271 @@ describe("sisyphus-task", () => {
     }, { timeout: 20000 })
   })
 
+  describe("run_in_background parameter", () => {
+    test("#given category without run_in_background #when executing #then throws required parameter error", async () => {
+      // given
+      const createDelegateTask = await importFreshCreateDelegateTask()
+      const mockManager = { launch: async () => ({}) }
+      const mockClient = {
+        app: { agents: async () => ({ data: [] }) },
+        config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
+        session: {
+          create: async () => ({ data: { id: "test-session" } }),
+          prompt: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+        },
+      }
+      const tool = createDelegateTask({ manager: mockManager, client: mockClient })
+
+      // when
+      // then
+      await expect(tool.execute(
+        {
+          description: "Category without run flag",
+          prompt: "Do something",
+          category: "quick",
+          load_skills: [],
+        },
+        { sessionID: "parent-session", messageID: "parent-message", agent: "sisyphus", abort: new AbortController().signal }
+      )).rejects.toThrow("Invalid arguments: 'run_in_background' parameter is REQUIRED")
+    })
+
+    test("#given subagent_type without run_in_background #when executing #then throws required parameter error", async () => {
+      // given
+      const createDelegateTask = await importFreshCreateDelegateTask()
+      const mockManager = { launch: async () => ({}) }
+      const mockClient = {
+        app: { agents: async () => ({ data: [{ name: "explore", mode: "subagent" }] }) },
+        config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
+        session: {
+          create: async () => ({ data: { id: "test-session" } }),
+          prompt: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+        },
+      }
+      const tool = createDelegateTask({ manager: mockManager, client: mockClient })
+
+      // when
+      // then
+      await expect(tool.execute(
+        {
+          description: "Subagent without run flag",
+          prompt: "Find patterns",
+          subagent_type: "explore",
+          load_skills: [],
+        },
+        { sessionID: "parent-session", messageID: "parent-message", agent: "sisyphus", abort: new AbortController().signal }
+      )).rejects.toThrow("Invalid arguments: 'run_in_background' parameter is REQUIRED")
+    })
+
+    test("#given session_id without run_in_background #when executing #then throws required parameter error", async () => {
+      // given
+      const createDelegateTask = await importFreshCreateDelegateTask()
+      const mockManager = { resume: async () => ({ id: "task-1", sessionID: "ses_1", status: "running" }) }
+      const mockClient = {
+        app: { agents: async () => ({ data: [] }) },
+        config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
+        session: {
+          create: async () => ({ data: { id: "test-session" } }),
+          prompt: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+        },
+      }
+      const tool = createDelegateTask({ manager: mockManager, client: mockClient })
+
+      // when
+      // then
+      await expect(tool.execute(
+        {
+          description: "Continue without run flag",
+          prompt: "Continue",
+          session_id: "ses_existing",
+          load_skills: [],
+        },
+        { sessionID: "parent-session", messageID: "parent-message", agent: "sisyphus", abort: new AbortController().signal }
+      )).rejects.toThrow("Invalid arguments: 'run_in_background' parameter is REQUIRED")
+    })
+
+    test("#given no category no subagent_type no session_id and no run_in_background #when executing #then throws required parameter error", async () => {
+      // given
+      const createDelegateTask = await importFreshCreateDelegateTask()
+      const mockManager = { launch: async () => ({}) }
+      const mockClient = {
+        app: { agents: async () => ({ data: [] }) },
+        config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
+        session: {
+          create: async () => ({ data: { id: "test-session" } }),
+          prompt: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+        },
+      }
+      const tool = createDelegateTask({ manager: mockManager, client: mockClient })
+
+      // when
+      // then
+      await expect(tool.execute(
+        {
+          description: "Missing required args",
+          prompt: "Do something",
+          load_skills: [],
+        },
+        { sessionID: "parent-session", messageID: "parent-message", agent: "sisyphus", abort: new AbortController().signal }
+      )).rejects.toThrow("Invalid arguments: 'run_in_background' parameter is REQUIRED")
+    })
+
+    test("#given explicit run_in_background=false #when executing #then sync execution succeeds", async () => {
+      // given
+      let promptCalled = false
+      const mockManager = { launch: async () => ({}) }
+      const mockClient = {
+        app: { agents: async () => ({ data: [{ name: "oracle", mode: "subagent", model: { providerID: "anthropic", modelID: "claude-opus-4-6" } }] }) },
+        config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
+        session: {
+          get: async () => ({ data: { directory: "/project" } }),
+          create: async () => ({ data: { id: "ses_explicit_false" } }),
+          prompt: async () => {
+            promptCalled = true
+            return { data: {} }
+          },
+          promptAsync: async () => {
+            promptCalled = true
+            return { data: {} }
+          },
+          messages: async () => ({ data: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "Done" }] }] }),
+          status: async () => ({ data: { ses_explicit_false: { type: "idle" } } }),
+        },
+      }
+      const executorMock = {
+        resolveSkillContent: mock(async () => ({
+          content: undefined,
+          contents: [],
+          error: null,
+        })),
+        resolveParentContext: mock(async () => ({ model: undefined, agent: "sisyphus" })),
+        resolveCategoryExecution: mock(async () => ({
+          agentToUse: "Sisyphus-Junior",
+          categoryModel: { providerID: "anthropic", modelID: "claude-haiku-4-5" },
+          categoryPromptAppend: undefined,
+          modelInfo: undefined,
+          actualModel: "anthropic/claude-haiku-4-5",
+          isUnstableAgent: false,
+        })),
+        resolveSubagentExecution: mock(async () => ({
+          agentToUse: "oracle",
+          categoryModel: { providerID: "anthropic", modelID: "claude-opus-4-6" },
+        })),
+        executeBackgroundTask: mock(async () => "Background task launched"),
+        executeSyncTask: mock(async () => {
+          promptCalled = true
+          return "Done"
+        }),
+        executeUnstableAgentTask: mock(async () => "Background task launched"),
+        executeBackgroundContinuation: mock(async () => "Background task continued"),
+        executeSyncContinuation: mock(async () => "Continued task result"),
+      }
+      mockModuleVariants("./executor", "./executor.ts", executorMock)
+      moduleImportCounter += 1
+      const { createDelegateTask } = await import(`./tools?explicit-false=${moduleImportCounter}`)
+      const tool = createDelegateTask({ manager: mockManager, client: mockClient })
+
+      // when
+      const result = await tool.execute(
+        {
+          description: "Explicit false",
+          prompt: "Run sync",
+          subagent_type: "oracle",
+          run_in_background: false,
+          load_skills: [],
+        },
+        { sessionID: "parent-session", messageID: "parent-message", agent: "sisyphus", abort: new AbortController().signal }
+      )
+
+      // then
+      expect(promptCalled).toBe(true)
+      expect(result).toContain("Done")
+    }, { timeout: 10000 })
+
+    test("#given explicit run_in_background=true #when executing #then background execution succeeds", async () => {
+      // given
+      let launchCalled = false
+      const mockManager = {
+        launch: async () => {
+          launchCalled = true
+          return {
+            id: "bg_explicit_true",
+            sessionID: "ses_bg_explicit_true",
+            description: "Explicit true",
+            agent: "Sisyphus-Junior",
+            status: "running",
+          }
+        },
+      }
+      const mockClient = {
+        app: { agents: async () => ({ data: [] }) },
+        config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
+        model: { list: async () => [] },
+        session: {
+          create: async () => ({ data: { id: "ses_bg_explicit_true" } }),
+          prompt: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+        },
+      }
+      const executorMock = {
+        resolveSkillContent: mock(async () => ({
+          content: undefined,
+          contents: [],
+          error: null,
+        })),
+        resolveParentContext: mock(async () => ({ model: undefined, agent: "sisyphus" })),
+        resolveCategoryExecution: mock(async () => ({
+          agentToUse: "Sisyphus-Junior",
+          categoryModel: { providerID: "openai", modelID: "gpt-5.4-mini" },
+          categoryPromptAppend: undefined,
+          modelInfo: undefined,
+          actualModel: "openai/gpt-5.4-mini",
+          isUnstableAgent: false,
+        })),
+        resolveSubagentExecution: mock(async () => ({
+          agentToUse: "oracle",
+          categoryModel: { providerID: "anthropic", modelID: "claude-opus-4-6" },
+        })),
+        executeBackgroundTask: mock(async () => {
+          launchCalled = true
+          return "Background task launched"
+        }),
+        executeSyncTask: mock(async () => "Sync task completed"),
+        executeUnstableAgentTask: mock(async () => "Background task launched"),
+        executeBackgroundContinuation: mock(async () => "Background task continued"),
+        executeSyncContinuation: mock(async () => "Continued task result"),
+      }
+      mockModuleVariants("./executor", "./executor.ts", executorMock)
+      moduleImportCounter += 1
+      const { createDelegateTask } = await import(`./tools?explicit-true=${moduleImportCounter}`)
+      const tool = createDelegateTask({ manager: mockManager, client: mockClient })
+
+      // when
+      const result = await tool.execute(
+        {
+          description: "Explicit true",
+          prompt: "Run background",
+          category: "quick",
+          run_in_background: true,
+          load_skills: [],
+        },
+        { sessionID: "parent-session", messageID: "parent-message", agent: "sisyphus", abort: new AbortController().signal }
+      )
+
+      // then
+      expect(launchCalled).toBe(true)
+      expect(result).toContain("Background task launched")
+    }, { timeout: 10000 })
+  })
+
   describe("session_id with background parameter", () => {
   test("session_id with background=false should wait for result and return content", async () => {
     // Note: This test needs extended timeout because the implementation has MIN_STABILITY_TIME_MS = 5000

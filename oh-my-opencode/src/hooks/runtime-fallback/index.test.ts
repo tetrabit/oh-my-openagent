@@ -393,7 +393,7 @@ describe("runtime-fallback", () => {
       expect(nonRetryLog).toBeUndefined()
     })
 
-    test("should trigger fallback on Copilot auto-retry signal in message.updated", async () => {
+    test("should ignore Copilot provider-managed retry signals in message.updated", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.2"]),
@@ -424,15 +424,11 @@ describe("runtime-fallback", () => {
         },
       })
 
-      const signalLog = logCalls.find((c) => c.msg.includes("Detected provider auto-retry signal"))
-      expect(signalLog).toBeDefined()
-
       const fallbackLog = logCalls.find((c) => c.msg.includes("Preparing fallback"))
-      expect(fallbackLog).toBeDefined()
-      expect(fallbackLog?.data).toMatchObject({ from: "github-copilot/claude-opus-4.6", to: "openai/gpt-5.2" })
+      expect(fallbackLog).toBeUndefined()
     })
 
-    test("should trigger fallback on OpenAI auto-retry signal in message.updated", async () => {
+    test("should ignore OpenAI provider-managed retry signals in message.updated", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithCategoryFallback(["anthropic/claude-opus-4-6"]),
@@ -462,15 +458,11 @@ describe("runtime-fallback", () => {
         },
       })
 
-      const signalLog = logCalls.find((c) => c.msg.includes("Detected provider auto-retry signal"))
-      expect(signalLog).toBeDefined()
-
       const fallbackLog = logCalls.find((c) => c.msg.includes("Preparing fallback"))
-      expect(fallbackLog).toBeDefined()
-      expect(fallbackLog?.data).toMatchObject({ from: "openai/gpt-5.3-codex", to: "anthropic/claude-opus-4-6" })
+      expect(fallbackLog).toBeUndefined()
     })
 
-    test("should skip same-model fallback candidate on auto-retry signal", async () => {
+    test("should not trigger fallback when provider-managed retry text is observed on the current model", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithCategoryFallback([
@@ -504,8 +496,7 @@ describe("runtime-fallback", () => {
       })
 
       const fallbackLog = logCalls.find((c) => c.msg.includes("Preparing fallback"))
-      expect(fallbackLog).toBeDefined()
-      expect(fallbackLog?.data).toMatchObject({ from: "openai/gpt-5.3-codex", to: "anthropic/claude-opus-4-6" })
+      expect(fallbackLog).toBeUndefined()
     })
 
     test("should NOT trigger fallback on auto-retry signal when timeout_seconds is 0", async () => {
@@ -904,7 +895,7 @@ describe("runtime-fallback", () => {
       void sessionErrorPromise
     })
 
-    test("should force advance fallback from message.updated when Copilot auto-retry signal appears during in-flight retry", async () => {
+    test("should not force advance fallback from message.updated when Copilot retries itself", async () => {
       const retriedModels: string[] = []
       const pending = new Promise<never>(() => {})
 
@@ -982,9 +973,7 @@ describe("runtime-fallback", () => {
         },
       })
 
-      expect(retriedModels.length).toBeGreaterThanOrEqual(2)
-      expect(retriedModels[0]).toBe("github-copilot/claude-opus-4.6")
-      expect(retriedModels[1]).toBe("anthropic/claude-opus-4-6")
+      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
 
       void sessionErrorPromise
     })
@@ -1378,7 +1367,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
     })
 
-    test("should not clear fallback timeout on assistant non-error update with Copilot retry signal", async () => {
+    test("should clear fallback timeout on assistant non-error update with Copilot retry signal", async () => {
       const retriedModels: string[] = []
 
       const hook = createRuntimeFallbackHook(
@@ -1451,10 +1440,10 @@ describe("runtime-fallback", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 60))
 
-      expect(retriedModels).toContain("openai/gpt-5.3-codex")
+      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
     })
 
-    test("should not clear fallback timeout on assistant non-error update with OpenAI retry signal", async () => {
+    test("should clear fallback timeout on assistant non-error update with OpenAI retry signal", async () => {
       const retriedModels: string[] = []
 
       const hook = createRuntimeFallbackHook(
@@ -1526,7 +1515,7 @@ describe("runtime-fallback", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 60))
 
-      expect(retriedModels).toContain("anthropic/claude-opus-4-6")
+      expect(retriedModels).toEqual(["openai/gpt-5.3-codex"])
     })
 
     test("should not clear fallback timeout on assistant non-error update without user-visible content", async () => {
@@ -1605,7 +1594,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toContain("openai/gpt-5.3-codex")
     })
 
-    test("should refresh fallback timeout when persisted assistant tool progress is observed", async () => {
+    test("should clear fallback timeout when persisted assistant tool progress is observed", async () => {
       const retriedModels: string[] = []
       let messagesData: Array<{
         info?: Record<string, unknown>
@@ -1707,10 +1696,10 @@ describe("runtime-fallback", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 20))
 
-      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6", "openai/gpt-5.3-codex"])
+      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
 
       const progressLog = logCalls.find((c) =>
-        c.msg.includes("Assistant progress observed; refreshed fallback timeout")
+        c.msg.includes("Assistant progress observed; cleared fallback timeout")
       )
       expect(progressLog).toBeDefined()
     })
@@ -2934,7 +2923,7 @@ describe("runtime-fallback", () => {
   })
 
   describe("session.status retry handling", () => {
-    test("should use configured runtime fallback models for session.status retry", async () => {
+    test("should observe provider-managed retry in session.status and keep the current model", async () => {
       const promptCalls: Array<{ body?: { agent?: string; model?: { providerID?: string; modelID?: string } } }> = []
       const abortCalls: Array<{ path?: { id?: string } }> = []
 
@@ -2998,16 +2987,20 @@ describe("runtime-fallback", () => {
         },
       })
 
-      expect(promptCalls).toHaveLength(1)
-      expect(abortCalls.some((call) => call.path?.id === sessionID)).toBe(true)
-      expect(promptCalls[0]?.body?.agent).toBe("Sisyphus (Ultraworker)")
-      expect(promptCalls[0]?.body?.model).toEqual({
-        providerID: "openai",
-        modelID: "gpt-5.4",
+      expect(promptCalls).toHaveLength(0)
+      expect(abortCalls).toEqual([])
+      const retryLog = logCalls.find((call) =>
+        call.msg.includes("Observed provider-managed retry in session.status; keeping current model")
+      )
+      expect(retryLog?.data).toMatchObject({
+        sessionID,
+        model: "anthropic/claude-opus-4-6",
+        attempt: 1,
+        next: 1000,
       })
     })
 
-    test("should fall back to the display-name agent when the retry context only has the canonical config key", async () => {
+    test("should keep the current model when session.status retry only provides the canonical agent key", async () => {
       const promptCalls: Array<{ body?: { agent?: string; model?: { providerID?: string; modelID?: string } } }> = []
 
       const hook = createRuntimeFallbackHook(
@@ -3080,15 +3073,19 @@ describe("runtime-fallback", () => {
         },
       })
 
-      expect(promptCalls).toHaveLength(1)
-      expect(promptCalls[0]?.body?.agent).toBe("Sisyphus (Ultraworker)")
-      expect(promptCalls[0]?.body?.model).toEqual({
-        providerID: "openai",
-        modelID: "gpt-5.4",
+      expect(promptCalls).toHaveLength(0)
+      const retryLog = logCalls.find((call) =>
+        call.msg.includes("Observed provider-managed retry in session.status; keeping current model")
+      )
+      expect(retryLog?.data).toMatchObject({
+        sessionID,
+        model: "anthropic/claude-opus-4-6",
+        attempt: 1,
+        next: 1000,
       })
     })
 
-    test("should ignore abort noise while awaiting fallback result and keep waiting for the fallback response", async () => {
+    test("should ignore abort noise while awaiting fallback result and keep the active fallback model", async () => {
       const promptCalls: Array<{ body?: { model?: { providerID?: string; modelID?: string } } }> = []
       const hook = createRuntimeFallbackHook(
         createMockPluginInput({
@@ -3127,15 +3124,10 @@ describe("runtime-fallback", () => {
 
       await hook.event({
         event: {
-          type: "session.status",
+          type: "session.error",
           properties: {
             sessionID,
-            status: {
-              type: "retry",
-              attempt: 1,
-              message: "provider retrying request after rate limit",
-              next: 1000,
-            },
+            error: { statusCode: 429, message: "Rate limit exceeded" },
           },
         },
       })
@@ -3190,13 +3182,13 @@ describe("runtime-fallback", () => {
       expect(ignoredAssistantAbortLog).toBeDefined()
 
       const awaitingRetryLog = logCalls.find((call) =>
-        call.msg.includes("Processing session.status retry while awaiting fallback result")
+        call.msg.includes("Observed provider-managed retry in session.status; keeping current model")
       )
       expect(awaitingRetryLog).toBeDefined()
-      expect(promptCalls).toHaveLength(2)
-      expect(promptCalls[1]?.body?.model).toEqual({
-        providerID: "provider-b",
-        modelID: "model-b",
+      expect(promptCalls).toHaveLength(1)
+      expect(promptCalls[0]?.body?.model).toEqual({
+        providerID: "provider-a",
+        modelID: "model-a",
       })
     })
   })

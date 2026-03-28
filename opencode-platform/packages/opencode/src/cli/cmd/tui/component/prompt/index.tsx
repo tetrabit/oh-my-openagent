@@ -1,13 +1,15 @@
 import { BoxRenderable, TextareaRenderable, MouseEvent, PasteEvent, t, dim, fg } from "@opentui/core"
-import { createEffect, createMemo, type JSX, onMount, createSignal, onCleanup, Show, Switch, Match } from "solid-js"
+import { createEffect, createMemo, type JSX, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
 import "opentui-spinner/solid"
+import path from "path"
+import { Filesystem } from "@/util/filesystem"
 import { useLocal } from "@tui/context/local"
 import { useTheme } from "@tui/context/theme"
 import { EmptyBorder } from "@tui/component/border"
 import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import { useSync } from "@tui/context/sync"
-import { Identifier } from "@/id/id"
+import { MessageID, PartID } from "@/session/schema"
 import { createStore, produce } from "solid-js/store"
 import { useKeybind } from "@tui/context/keybind"
 import { usePromptHistory, type PromptInfo } from "./history"
@@ -19,7 +21,7 @@ import { useRenderer } from "@opentui/solid"
 import { Editor } from "@tui/util/editor"
 import { useExit } from "../../context/exit"
 import { Clipboard } from "../../util/clipboard"
-import type { FilePart } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
 import { TuiEvent } from "../../event"
 import { iife } from "@/util/iife"
 import { Locale } from "@/util/locale"
@@ -32,9 +34,16 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
+import {
+  getPromptStateFromCompletedAssistant,
+  getPromptStateFromRuntimeFallbackUser,
+  isInternalRuntimeFallbackPrompt,
+} from "./session-model-sync"
+import { isCtrlCKeyEvent } from "../../util/ctrl-c"
 
 export type PromptProps = {
   sessionID?: string
+  workspaceID?: string
   visible?: boolean
   disabled?: boolean
   onSubmit?: () => void
@@ -54,6 +63,7 @@ export type PromptRef = {
 }
 
 const PLACEHOLDERS = ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"]
+const SHELL_PLACEHOLDERS = ["ls -la", "git status", "pwd"]
 
 export function Prompt(props: PromptProps) {
   let input: TextareaRenderable
@@ -117,6 +127,26 @@ export function Prompt(props: PromptProps) {
     return messages.findLast((m) => m.role === "user")
   })
 
+  const lastRealUserMessage = createMemo(() => {
+    if (!props.sessionID) return undefined
+    const messages = sync.data.message[props.sessionID]
+    if (!messages) return undefined
+    return messages.findLast(
+      (message): message is UserMessage =>
+        message.role === "user" && !isInternalRuntimeFallbackPrompt(sync.data.part[message.id] ?? []),
+    )
+  })
+
+  const lastCompletedAssistantMessage = createMemo(() => {
+    if (!props.sessionID) return undefined
+    const messages = sync.data.message[props.sessionID]
+    if (!messages) return undefined
+    return messages.findLast(
+      (message): message is AssistantMessage =>
+        message.role === "assistant" && message.time.completed !== undefined && !message.error,
+    )
+  })
+
   const [store, setStore] = createStore<{
     prompt: PromptInfo
     mode: "normal" | "shell"
@@ -134,28 +164,81 @@ export function Prompt(props: PromptProps) {
     interrupt: 0,
   })
 
+  createEffect(
+    on(
+      () => props.sessionID,
+      () => {
+        setStore("placeholder", Math.floor(Math.random() * PLACEHOLDERS.length))
+      },
+      { defer: true },
+    ),
+  )
+
+  // Initialize agent/model/variant from last user message when session changes.
   let syncedSessionID: string | undefined
-  let syncedMessageID: string | undefined
   createEffect(() => {
     const sessionID = props.sessionID
     const msg = lastUserMessage()
-    if (!sessionID || !msg) return
 
     if (sessionID !== syncedSessionID) {
+      if (!sessionID || !msg) return
+
       syncedSessionID = sessionID
-      syncedMessageID = undefined
+
+      // Only set agent if it's a primary agent (not a subagent)
+      const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
+      if (msg.agent && isPrimaryAgent) {
+        local.agent.set(msg.agent)
+        if (msg.model) local.model.set(msg.model)
+        local.model.variant.set(msg.variant)
+      }
     }
+  })
 
-    if (msg.id === syncedMessageID) return
-    syncedMessageID = msg.id
+  let syncedAssistantMessageKey: string | undefined
+  let syncedFallbackUserMessageKey: string | undefined
 
-    // Only set agent if it's a primary agent (not a subagent)
-    const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
-    if (!msg.agent || !isPrimaryAgent) return
+  createEffect(() => {
+    const sessionID = props.sessionID
+    const user = lastUserMessage()
+    if (!sessionID || !user) return
 
-    local.agent.set(msg.agent)
-    if (msg.model) local.model.set(msg.model)
-    if (msg.variant) local.model.variant.set(msg.variant)
+    const syncKey = `${sessionID}:${user.id}`
+    if (syncKey === syncedFallbackUserMessageKey) return
+
+    const next = getPromptStateFromRuntimeFallbackUser({
+      user,
+      parts: sync.data.part[user.id] ?? [],
+      primaryAgents: local.agent.list().map((agent) => agent.name),
+    })
+    if (!next) return
+
+    syncedFallbackUserMessageKey = syncKey
+    local.agent.set(next.agent)
+    local.model.set(next.model)
+    local.model.variant.set(next.variant)
+  })
+
+  createEffect(() => {
+    const sessionID = props.sessionID
+    const assistant = lastCompletedAssistantMessage()
+    if (!sessionID || !assistant) return
+    if (status().type !== "idle") return
+
+    const syncKey = `${sessionID}:${assistant.id}`
+    if (syncKey === syncedAssistantMessageKey) return
+
+    const next = getPromptStateFromCompletedAssistant({
+      assistant,
+      user: lastRealUserMessage(),
+      primaryAgents: local.agent.list().map((agent) => agent.name),
+    })
+    if (!next) return
+
+    syncedAssistantMessageKey = syncKey
+    local.agent.set(next.agent)
+    local.model.set(next.model)
+    local.model.variant.set(next.variant)
   })
 
   command.register(() => {
@@ -529,13 +612,28 @@ export function Prompt(props: PromptProps) {
       promptModelWarning()
       return
     }
-    const sessionID = props.sessionID
-      ? props.sessionID
-      : await (async () => {
-          const sessionID = await sdk.client.session.create({}).then((x) => x.data!.id)
-          return sessionID
-        })()
-    const messageID = Identifier.ascending("message")
+
+    let sessionID = props.sessionID
+    if (sessionID == null) {
+      const res = await sdk.client.session.create({
+        workspaceID: props.workspaceID,
+      })
+
+      if (res.error) {
+        console.log("Creating a session failed:", res.error)
+
+        toast.show({
+          message: "Creating a session failed. Open console for more details.",
+          variant: "error",
+        })
+
+        return
+      }
+
+      sessionID = res.data.id
+    }
+
+    const messageID = MessageID.ascending()
     let inputText = store.prompt.input
 
     // Expand pasted text inline before submitting
@@ -598,7 +696,7 @@ export function Prompt(props: PromptProps) {
         parts: nonTextParts
           .filter((x) => x.type === "file")
           .map((x) => ({
-            id: Identifier.ascending("part"),
+            id: PartID.ascending(),
             ...x,
           })),
       })
@@ -613,12 +711,12 @@ export function Prompt(props: PromptProps) {
           variant,
           parts: [
             {
-              id: Identifier.ascending("part"),
+              id: PartID.ascending(),
               type: "text",
               text: inputText,
             },
             ...nonTextParts.map((x) => ({
-              id: Identifier.ascending("part"),
+              id: PartID.ascending(),
               ...x,
             })),
           ],
@@ -686,7 +784,7 @@ export function Prompt(props: PromptProps) {
   async function pasteImage(file: { filename?: string; content: string; mime: string }) {
     const currentOffset = input.visualCursor.offset
     const extmarkStart = currentOffset
-    const count = store.prompt.parts.filter((x) => x.type === "file").length
+    const count = store.prompt.parts.filter((x) => x.type === "file" && x.mime.startsWith("image/")).length
     const virtualText = `[Image ${count + 1}]`
     const extmarkEnd = extmarkStart + virtualText.length
     const textToInsert = virtualText + " "
@@ -737,6 +835,15 @@ export function Prompt(props: PromptProps) {
     if (variants.length === 0) return false
     const current = local.model.variant.current()
     return !!current
+  })
+
+  const placeholderText = createMemo(() => {
+    if (props.sessionID) return undefined
+    if (store.mode === "shell") {
+      const example = SHELL_PLACEHOLDERS[store.placeholder % SHELL_PLACEHOLDERS.length]
+      return `Run a command... "${example}"`
+    }
+    return `Ask anything... "${PLACEHOLDERS[store.placeholder % PLACEHOLDERS.length]}"`
   })
 
   const spinnerDef = createMemo(() => {
@@ -800,7 +907,7 @@ export function Prompt(props: PromptProps) {
             flexGrow={1}
           >
             <textarea
-              placeholder={props.sessionID ? undefined : `Ask anything... "${PLACEHOLDERS[store.placeholder]}"`}
+              placeholder={placeholderText()}
               textColor={keybind.leader ? theme.textMuted : theme.text}
               focusedTextColor={keybind.leader ? theme.textMuted : theme.text}
               minHeight={1}
@@ -844,7 +951,7 @@ export function Prompt(props: PromptProps) {
                   setStore("extmarkToPartIndex", new Map())
                   return
                 }
-                if (keybind.match("app_exit", e)) {
+                if (keybind.match("app_exit", e) && !isCtrlCKeyEvent(e)) {
                   if (store.prompt.input === "") {
                     await exit()
                     // Don't preventDefault - let textarea potentially handle the event
@@ -853,6 +960,7 @@ export function Prompt(props: PromptProps) {
                   }
                 }
                 if (e.name === "!" && input.visualCursor.offset === 0) {
+                  setStore("placeholder", Math.floor(Math.random() * SHELL_PLACEHOLDERS.length))
                   setStore("mode", "shell")
                   e.preventDefault()
                   return
@@ -913,26 +1021,26 @@ export function Prompt(props: PromptProps) {
                 const isUrl = /^(https?):\/\//.test(filepath)
                 if (!isUrl) {
                   try {
-                    const file = Bun.file(filepath)
+                    const mime = Filesystem.mimeType(filepath)
+                    const filename = path.basename(filepath)
                     // Handle SVG as raw text content, not as base64 image
-                    if (file.type === "image/svg+xml") {
+                    if (mime === "image/svg+xml") {
                       event.preventDefault()
-                      const content = await file.text().catch(() => {})
+                      const content = await Filesystem.readText(filepath).catch(() => {})
                       if (content) {
-                        pasteText(content, `[SVG: ${file.name ?? "image"}]`)
+                        pasteText(content, `[SVG: ${filename ?? "image"}]`)
                         return
                       }
                     }
-                    if (file.type.startsWith("image/")) {
+                    if (mime.startsWith("image/")) {
                       event.preventDefault()
-                      const content = await file
-                        .arrayBuffer()
+                      const content = await Filesystem.readArrayBuffer(filepath)
                         .then((buffer) => Buffer.from(buffer).toString("base64"))
                         .catch(() => {})
                       if (content) {
                         await pasteImage({
-                          filename: file.name,
-                          mime: file.type,
+                          filename,
+                          mime,
                           content,
                         })
                         return

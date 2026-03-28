@@ -74,7 +74,7 @@ describe("createAutoSlashCommandHook leak prevention", () => {
           //#when
           nowSpy.mockReturnValue(0)
           await hook["command.execute.before"](input, firstOutput)
-          nowSpy.mockReturnValue(29_999)
+          nowSpy.mockReturnValue(99)
           await hook["command.execute.before"](input, secondOutput)
 
           //#then
@@ -99,7 +99,7 @@ describe("createAutoSlashCommandHook leak prevention", () => {
           //#when
           nowSpy.mockReturnValue(0)
           await hook["command.execute.before"](input, firstOutput)
-          nowSpy.mockReturnValue(30_001)
+          nowSpy.mockReturnValue(101)
           await hook["command.execute.before"](input, secondOutput)
 
           //#then

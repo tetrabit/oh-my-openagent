@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 
-import { describe, test, expect, spyOn, beforeEach, afterEach } from "bun:test"
+import { describe, test, expect, spyOn, beforeEach, afterEach, mock } from "bun:test"
 import { resolveCategoryConfig, createConfigHandler } from "./config-handler"
 import type { CategoryConfig } from "../config/schema"
 import type { OhMyOpenCodeConfig } from "../config"
@@ -21,6 +21,7 @@ import * as permissionCompat from "../shared/permission-compat"
 import * as modelResolver from "../shared/model-resolver"
 
 beforeEach(() => {
+  mock.restore()
   spyOn(agents, "createBuiltinAgents" as any).mockResolvedValue({
     sisyphus: { name: "sisyphus", prompt: "test", mode: "primary" },
     oracle: { name: "oracle", prompt: "test", mode: "subagent" },
@@ -100,6 +101,7 @@ afterEach(() => {
   ;(configDir.getOpenCodeConfigPaths as any)?.mockRestore?.()
   ;(permissionCompat.migrateAgentConfig as any)?.mockRestore?.()
   ;(modelResolver.resolveModelWithFallback as any)?.mockRestore?.()
+  mock.restore()
 })
 
 describe("Sisyphus-Junior model inheritance", () => {

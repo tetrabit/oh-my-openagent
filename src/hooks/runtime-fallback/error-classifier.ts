@@ -28,18 +28,28 @@ export function getErrorMessage(error: unknown): string {
   }
 }
 
+const DEFAULT_RETRY_PATTERN = new RegExp(`\\b(${DEFAULT_CONFIG.retry_on_errors.join("|")})\\b`)
+
 export function extractStatusCode(error: unknown, retryOnErrors?: number[]): number | undefined {
   if (!error) return undefined
 
   const errorObj = error as Record<string, unknown>
 
-  const statusCode = errorObj.statusCode ?? errorObj.status ?? (errorObj.data as Record<string, unknown>)?.statusCode
-  if (typeof statusCode === "number") {
+  const statusCode = [
+    errorObj.statusCode,
+    errorObj.status,
+    (errorObj.data as Record<string, unknown>)?.statusCode,
+    (errorObj.error as Record<string, unknown>)?.statusCode,
+    (errorObj.cause as Record<string, unknown>)?.statusCode,
+  ].find((code): code is number => typeof code === "number")
+
+  if (statusCode !== undefined) {
     return statusCode
   }
 
-  const codes = retryOnErrors ?? DEFAULT_CONFIG.retry_on_errors
-  const pattern = new RegExp(`\\b(${codes.join("|")})\\b`)
+  const pattern = retryOnErrors 
+    ? new RegExp(`\\b(${retryOnErrors.join("|")})\\b`)
+    : DEFAULT_RETRY_PATTERN
   const message = getErrorMessage(error)
   const statusMatch = message.match(pattern)
   if (statusMatch) {
@@ -92,6 +102,16 @@ export function classifyErrorType(error: unknown): string | undefined {
 
   if (/api.?key/i.test(message) && /must be a string/i.test(message)) {
     return "invalid_api_key"
+  }
+
+  if (
+    /token\s+refresh\s+failed/i.test(message) ||
+    /token\s+exchange\s+failed/i.test(message)
+  ) {
+    if (/(?:invalid_grant|invalid_client|revoked|expired\s+refresh\s+token|reauthori[sz]e)/i.test(message)) {
+      return "token_refresh_auth_failed"
+    }
+    return "token_refresh_failed"
   }
 
   if (
@@ -164,6 +184,10 @@ export function isRetryableError(error: unknown, retryOnErrors: number[]): boole
   const errorType = classifyErrorType(error)
 
   if (errorType === "missing_api_key") {
+    return true
+  }
+
+  if (errorType === "token_refresh_failed" || errorType === "token_refresh_auth_failed") {
     return true
   }
 
