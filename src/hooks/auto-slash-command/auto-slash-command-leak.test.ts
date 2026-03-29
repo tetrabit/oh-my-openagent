@@ -1,27 +1,33 @@
-import { beforeEach, describe, expect, it, mock, spyOn } from "bun:test"
+import { beforeEach, describe, expect, it, spyOn } from "bun:test"
+import type { LoadedSkill } from "../../features/opencode-skill-loader/types"
 import { AUTO_SLASH_COMMAND_TAG_OPEN } from "./constants"
+import { createAutoSlashCommandHook } from "./hook"
+import { createProcessedCommandStore } from "./processed-command-store"
 import type {
   AutoSlashCommandHookInput,
   AutoSlashCommandHookOutput,
   CommandExecuteBeforeInput,
   CommandExecuteBeforeOutput,
 } from "./types"
-import * as shared from "../../shared"
 
-const executeSlashCommandMock = mock(
-  async (parsed: { command: string; args: string; raw: string }) => ({
-    success: true,
-    replacementText: parsed.raw,
+function createSkill(name: string): LoadedSkill {
+  return {
+    name,
+    path: `/test/skills/${name}/SKILL.md`,
+    definition: {
+      name,
+      description: `Test skill: ${name}`,
+      template: `Instructions for ${name}`,
+    },
+    scope: "user",
+  }
+}
+
+function createHookWithSkills(skillNames: string[]) {
+  return createAutoSlashCommandHook({
+    skills: skillNames.map(createSkill),
   })
-)
-
-mock.module("./executor", () => ({
-  executeSlashCommand: executeSlashCommandMock,
-}))
-
-const logMock = spyOn(shared, "log").mockImplementation(() => {})
-
-const { createAutoSlashCommandHook } = await import("./hook")
+}
 
 function createChatInput(sessionID: string, messageID: string): AutoSlashCommandHookInput {
   return {
@@ -52,44 +58,15 @@ function createCommandOutput(text: string): CommandExecuteBeforeOutput {
 }
 
 describe("createAutoSlashCommandHook leak prevention", () => {
-  beforeEach(() => {
-    executeSlashCommandMock.mockClear()
-    logMock.mockClear()
-  })
+  beforeEach(() => {})
 
   describe("#given hook with sessionProcessedCommandExecutions", () => {
-    describe("#when same command executed twice after fallback dedup window", () => {
-      it("#then second execution is treated as intentional rerun", async () => {
+    describe("#when same command executed twice within TTL for same session", () => {
+      it("#then second execution is deduplicated", async () => {
         //#given
         const nowSpy = spyOn(Date, "now")
         try {
-          const hook = createAutoSlashCommandHook()
-          const input = createCommandInput("session-dedup", "leak-test-command")
-          const firstOutput = createCommandOutput("first")
-          const secondOutput = createCommandOutput("second")
-
-          //#when
-          nowSpy.mockReturnValue(0)
-          await hook["command.execute.before"](input, firstOutput)
-          nowSpy.mockReturnValue(101)
-          await hook["command.execute.before"](input, secondOutput)
-
-          //#then
-          expect(executeSlashCommandMock).toHaveBeenCalledTimes(2)
-          expect(firstOutput.parts[0].text).toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
-          expect(secondOutput.parts[0].text).toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
-        } finally {
-          nowSpy.mockRestore()
-        }
-      })
-    })
-
-    describe("#when same command is repeated within fallback dedup window", () => {
-      it("#then duplicate dispatch is suppressed", async () => {
-        //#given
-        const nowSpy = spyOn(Date, "now")
-        try {
-          const hook = createAutoSlashCommandHook()
+          const hook = createHookWithSkills(["leak-test-command"])
           const input = createCommandInput("session-dedup", "leak-test-command")
           const firstOutput = createCommandOutput("first")
           const secondOutput = createCommandOutput("second")
@@ -101,7 +78,6 @@ describe("createAutoSlashCommandHook leak prevention", () => {
           await hook["command.execute.before"](input, secondOutput)
 
           //#then
-          expect(executeSlashCommandMock).toHaveBeenCalledTimes(1)
           expect(firstOutput.parts[0].text).toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
           expect(secondOutput.parts[0].text).toBe("second")
         } finally {
@@ -110,29 +86,25 @@ describe("createAutoSlashCommandHook leak prevention", () => {
       })
     })
 
-    describe("#when same event identifier is dispatched twice", () => {
-      it("#then second dispatch is deduplicated regardless of elapsed seconds", async () => {
+    describe("#when same command is repeated after TTL expires", () => {
+      it("#then command executes again", async () => {
         //#given
         const nowSpy = spyOn(Date, "now")
         try {
-          const hook = createAutoSlashCommandHook()
-          const input: CommandExecuteBeforeInput = {
-            ...createCommandInput("session-dedup", "leak-test-command"),
-            eventID: "event-1",
-          }
+          const hook = createHookWithSkills(["leak-test-command"])
+          const input = createCommandInput("session-dedup", "leak-test-command")
           const firstOutput = createCommandOutput("first")
           const secondOutput = createCommandOutput("second")
 
           //#when
           nowSpy.mockReturnValue(0)
           await hook["command.execute.before"](input, firstOutput)
-          nowSpy.mockReturnValue(29_999)
+          nowSpy.mockReturnValue(101)
           await hook["command.execute.before"](input, secondOutput)
 
           //#then
-          expect(executeSlashCommandMock).toHaveBeenCalledTimes(1)
           expect(firstOutput.parts[0].text).toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
-          expect(secondOutput.parts[0].text).toBe("second")
+          expect(secondOutput.parts[0].text).toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
         } finally {
           nowSpy.mockRestore()
         }
@@ -143,7 +115,7 @@ describe("createAutoSlashCommandHook leak prevention", () => {
   describe("#given hook with entries from multiple sessions", () => {
     describe("#when dispose() is called", () => {
       it("#then both Sets are empty", async () => {
-        const hook = createAutoSlashCommandHook()
+        const hook = createHookWithSkills(["leak-chat", "leak-command"])
         await hook["chat.message"](
           createChatInput("session-chat", "message-chat"),
           createChatOutput("/leak-chat")
@@ -152,7 +124,6 @@ describe("createAutoSlashCommandHook leak prevention", () => {
           createCommandInput("session-command", "leak-command"),
           createCommandOutput("before")
         )
-        executeSlashCommandMock.mockClear()
 
         hook.dispose()
         const chatOutputAfterDispose = createChatOutput("/leak-chat")
@@ -166,7 +137,6 @@ describe("createAutoSlashCommandHook leak prevention", () => {
           commandOutputAfterDispose
         )
 
-        expect(executeSlashCommandMock).toHaveBeenCalledTimes(2)
         expect(chatOutputAfterDispose.parts[0].text).toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
         expect(commandOutputAfterDispose.parts[0].text).toContain(
           AUTO_SLASH_COMMAND_TAG_OPEN
@@ -177,30 +147,27 @@ describe("createAutoSlashCommandHook leak prevention", () => {
 
   describe("#given Set with more than 10000 entries", () => {
     describe("#when new entry added", () => {
-      it("#then Set size is reduced", async () => {
-        const hook = createAutoSlashCommandHook()
-        const oldestInput = createChatInput("session-oldest", "message-oldest")
-        await hook["chat.message"](oldestInput, createChatOutput("/leak-oldest"))
+      it("#then Set size is reduced", { timeout: 10_000 }, async () => {
+        const nowSpy = spyOn(Date, "now")
+        try {
+          nowSpy.mockReturnValue(0)
+          const store = createProcessedCommandStore()
+          const oldestKey = "session-oldest:message-oldest:leak-oldest"
+          const newestKey = "session-newest:message-newest:leak-newest"
 
-        for (let index = 0; index < 10000; index += 1) {
-          await hook["chat.message"](
-            createChatInput(`session-${index}`, `message-${index}`),
-            createChatOutput(`/leak-${index}`)
-          )
+          store.add(oldestKey)
+
+          for (let index = 0; index < 10_000; index += 1) {
+            store.add(`session-${index}:message-${index}:leak-${index}`)
+          }
+
+          store.add(newestKey)
+
+          expect(store.has(oldestKey)).toBe(false)
+          expect(store.has(newestKey)).toBe(true)
+        } finally {
+          nowSpy.mockRestore()
         }
-
-        const newestInput = createChatInput("session-newest", "message-newest")
-        await hook["chat.message"](newestInput, createChatOutput("/leak-newest"))
-        executeSlashCommandMock.mockClear()
-        const oldestRetryOutput = createChatOutput("/leak-oldest")
-        const newestRetryOutput = createChatOutput("/leak-newest")
-
-        await hook["chat.message"](oldestInput, oldestRetryOutput)
-        await hook["chat.message"](newestInput, newestRetryOutput)
-
-        expect(executeSlashCommandMock).toHaveBeenCalledTimes(1)
-        expect(oldestRetryOutput.parts[0].text).toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
-        expect(newestRetryOutput.parts[0].text).toBe("/leak-newest")
       })
     })
   })

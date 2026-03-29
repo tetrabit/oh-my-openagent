@@ -9,8 +9,13 @@ import { SessionCategoryRegistry } from "../../shared/session-category-registry"
 import { buildRetryModelPayload } from "./retry-model-payload"
 import { getLastUserRetryParts } from "./last-user-retry-parts"
 import { extractSessionMessages } from "./session-messages"
+import { getAnthropicStatusSnapshot, isDirectAnthropicModel } from "./anthropic-status"
+import type { AnthropicStatusSnapshot } from "./anthropic-status"
+import { getAgentDisplayName } from "../../shared/agent-display-names"
 
 const SESSION_TTL_MS = 30 * 60 * 1000
+const TOKEN_REFRESH_RETRY_DELAYS_MS = [500, 1_500, 4_000, 8_000]
+const TOKEN_REFRESH_RETRY_TOAST_BASE_DURATION_MS = 5_000
 
 declare function setTimeout(callback: () => void | Promise<void>, delay?: number): RuntimeFallbackTimeout
 declare function clearTimeout(timeout: RuntimeFallbackTimeout): void
@@ -27,7 +32,43 @@ export function createAutoRetryHelpers(deps: HookDeps) {
     sessionFallbackTimeouts,
     pluginConfig,
     sessionStatusRetryKeys,
+    sessionTokenRefreshRetryCounts,
   } = deps
+  const anthropicStatusCache: {
+    current?: {
+      fetchedAt: number
+      snapshot: AnthropicStatusSnapshot | undefined
+    }
+  } = {}
+
+  const clearTokenRefreshRetryState = (sessionID: string) => {
+    sessionTokenRefreshRetryCounts.delete(sessionID)
+  }
+
+  const showTokenRefreshRetryToast = async (
+    model: string,
+    attempt: number,
+    delayMs: number,
+    anthropicStatus: AnthropicStatusSnapshot | undefined,
+  ): Promise<void> => {
+    const modelLabel = model.split("/").pop() ?? model
+    const delaySeconds = delayMs > 0 ? (delayMs / 1000).toFixed(delayMs % 1000 === 0 ? 0 : 1) : "0"
+    const statusSuffix = anthropicStatus?.degraded
+      ? ` Anthropic status: ${anthropicStatus.incidentName ?? anthropicStatus.description ?? "degraded"}.`
+      : ""
+
+    await ctx.client.tui.showToast({
+      body: {
+        title: "Token Refresh Retry",
+        message: `Retrying ${modelLabel} in ${delaySeconds}s (attempt ${attempt}/${TOKEN_REFRESH_RETRY_DELAYS_MS.length}).${statusSuffix}`,
+        variant: "warning",
+        duration: Math.max(
+          TOKEN_REFRESH_RETRY_TOAST_BASE_DURATION_MS,
+          Math.min(delayMs + 3_000, 12_000),
+        ),
+      },
+    }).catch(() => {})
+  }
 
   const abortSessionRequest = async (sessionID: string, source: string): Promise<void> => {
     try {
@@ -90,25 +131,25 @@ export function createAutoRetryHelpers(deps: HookDeps) {
     sessionFallbackTimeouts.set(sessionID, timer)
   }
 
-  const autoRetryWithFallback = async (
+  const retrySessionWithModel = async (
     sessionID: string,
-    newModel: string,
+    model: string,
     resolvedAgent: string | undefined,
     source: string,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     if (sessionRetryInFlight.has(sessionID)) {
       log(`[${HOOK_NAME}] Retry already in flight, skipping (${source})`, { sessionID })
-      return
+      return false
     }
 
-    const retryModelPayload = buildRetryModelPayload(newModel)
+    const retryModelPayload = buildRetryModelPayload(model)
     if (!retryModelPayload) {
-      log(`[${HOOK_NAME}] Invalid model format (missing provider prefix): ${newModel}`)
+      log(`[${HOOK_NAME}] Invalid model format (missing provider prefix): ${model}`)
       const state = sessionStates.get(sessionID)
       if (state?.pendingFallbackModel) {
         state.pendingFallbackModel = undefined
       }
-      return
+      return false
     }
 
     sessionRetryInFlight.add(sessionID)
@@ -120,19 +161,20 @@ export function createAutoRetryHelpers(deps: HookDeps) {
       })
       const retryParts = getLastUserRetryParts(messagesResp)
       if (retryParts.length > 0) {
-        log(`[${HOOK_NAME}] Auto-retrying with fallback model (${source})`, {
+        log(`[${HOOK_NAME}] Auto-retrying session request (${source})`, {
           sessionID,
-          model: newModel,
+          model,
         })
 
         const retryAgent = resolvedAgent ?? getSessionAgent(sessionID)
+        const retryAgentDisplayName = retryAgent ? getAgentDisplayName(retryAgent) : undefined
         sessionAwaitingFallbackResult.add(sessionID)
         scheduleSessionFallbackTimeout(sessionID, retryAgent)
 
         await ctx.client.session.promptAsync({
           path: { id: sessionID },
           body: {
-            ...(retryAgent ? { agent: retryAgent } : {}),
+            ...(retryAgentDisplayName ? { agent: retryAgentDisplayName } : {}),
             ...retryModelPayload,
             parts: retryParts,
           },
@@ -155,6 +197,76 @@ export function createAutoRetryHelpers(deps: HookDeps) {
         }
       }
     }
+
+    return retryDispatched
+  }
+
+  const autoRetryWithFallback = async (
+    sessionID: string,
+    newModel: string,
+    resolvedAgent: string | undefined,
+    source: string,
+  ): Promise<void> => {
+    await retrySessionWithModel(sessionID, newModel, resolvedAgent, source)
+  }
+
+  const retryCurrentModelAfterTokenRefreshFailure = async (
+    sessionID: string,
+    currentModel: string,
+    resolvedAgent: string | undefined,
+    source: string,
+  ): Promise<"retry-dispatched" | "allow-fallback"> => {
+    const completedAttempts = sessionTokenRefreshRetryCounts.get(sessionID) ?? 0
+    if (completedAttempts >= TOKEN_REFRESH_RETRY_DELAYS_MS.length) {
+      clearTokenRefreshRetryState(sessionID)
+      log(`[${HOOK_NAME}] Token refresh retry budget exhausted; allowing fallback`, {
+        sessionID,
+        currentModel,
+        retryBudget: TOKEN_REFRESH_RETRY_DELAYS_MS.length,
+      })
+      return "allow-fallback"
+    }
+
+    const attempt = completedAttempts + 1
+    sessionTokenRefreshRetryCounts.set(sessionID, attempt)
+
+    const anthropicStatus = isDirectAnthropicModel(currentModel)
+      ? await getAnthropicStatusSnapshot(anthropicStatusCache)
+      : undefined
+    const delayMs = TOKEN_REFRESH_RETRY_DELAYS_MS[completedAttempts] ?? 0
+
+    if (anthropicStatus?.degraded) {
+      log(`[${HOOK_NAME}] Anthropic status indicates degraded service during token refresh retry`, {
+        sessionID,
+        currentModel,
+        attempt,
+        indicator: anthropicStatus.indicator,
+        description: anthropicStatus.description,
+        incidentName: anthropicStatus.incidentName,
+        incidentStatus: anthropicStatus.incidentStatus,
+        impactedComponents: anthropicStatus.impactedComponents,
+      })
+    }
+
+    await showTokenRefreshRetryToast(currentModel, attempt, delayMs, anthropicStatus)
+
+    if (delayMs > 0) {
+      await Bun.sleep(delayMs)
+    }
+
+    const retryDispatched = await retrySessionWithModel(
+      sessionID,
+      currentModel,
+      resolvedAgent,
+      `${source}.token-refresh.${attempt}`,
+    )
+
+    if (!retryDispatched) {
+      clearTokenRefreshRetryState(sessionID)
+      return "allow-fallback"
+    }
+
+    return "retry-dispatched"
   }
 
   const resolveAgentForSessionFromContext = async (
@@ -199,6 +311,7 @@ export function createAutoRetryHelpers(deps: HookDeps) {
         clearSessionFallbackTimeout(sessionID)
         SessionCategoryRegistry.remove(sessionID)
         sessionStatusRetryKeys.delete(sessionID)
+        clearTokenRefreshRetryState(sessionID)
         cleanedCount++
       }
     }
@@ -212,6 +325,8 @@ export function createAutoRetryHelpers(deps: HookDeps) {
     clearSessionFallbackTimeout,
     scheduleSessionFallbackTimeout,
     autoRetryWithFallback,
+    retryCurrentModelAfterTokenRefreshFailure,
+    clearTokenRefreshRetryState,
     resolveAgentForSessionFromContext,
     cleanupStaleSessions,
   }

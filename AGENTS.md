@@ -1,5 +1,10 @@
 # oh-my-opencode — O P E N C O D E Plugin
 
+## MANDATORY: Use td for Task Management
+
+You must run td usage --new-session at conversation start (or after /clear) to see current work.
+Use td usage -q for subsequent reads.
+
 **Generated:** 2026-03-06 | **Commit:** 7fe44024 | **Branch:** dev
 
 ## OVERVIEW

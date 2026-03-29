@@ -1,11 +1,12 @@
-const { describe, test, expect } = require("bun:test")
-
-import { executeBackgroundTask } from "./executor"
-import type { DelegateTaskArgs, ToolContextWithMetadata } from "./types"
-
+const { describe, test, expect, mock, beforeEach, afterEach } = require("bun:test")
+// Ensure clean mock state to prevent contamination from other test files in the same worker
+mock.restore()
 describe("task tool metadata awaiting", () => {
+  beforeEach(() => { mock.restore() })
+  afterEach(() => { mock.restore() })
   test("executeBackgroundTask awaits ctx.metadata before returning", async () => {
     // given
+    const { executeBackgroundTask } = await import("./executor")
     let metadataResolved = false
     const abort = new AbortController()
 

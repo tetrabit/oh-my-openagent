@@ -1,8 +1,8 @@
 import type { PluginInput } from "@opencode-ai/plugin";
 import { getSessionAgent } from "../../features/claude-code-session-state";
 import { parseAnthropicTokenLimitError } from "../anthropic-context-window-limit-recovery";
-import { fetchAvailableModels } from "../../shared/model-availability";
-import { resolveRuntimeFallback } from "../../shared/model-resolver";
+import * as modelAvailability from "../../shared/model-availability";
+import * as modelResolver from "../../shared/model-resolver";
 import { log } from "../../shared/logger";
 
 const MAX_FALLBACK_ATTEMPTS = 3;
@@ -434,7 +434,7 @@ export function createContextWindowFallbackHook(ctx: PluginInput) {
       triedModels.add(currentModel);
     }
 
-    const availableModels = await fetchAvailableModels();
+    const availableModels = await modelAvailability.fetchAvailableModels();
     const agent = getSessionAgent(sessionID);
 
     debugLog("[context-window-fallback] resolving runtime fallback", {
@@ -448,7 +448,7 @@ export function createContextWindowFallbackHook(ctx: PluginInput) {
       parsedError: overflow,
     });
 
-    const fallback = resolveRuntimeFallback({
+    const fallback = modelResolver.resolveRuntimeFallback({
       currentModel,
       agent,
       availableModels,

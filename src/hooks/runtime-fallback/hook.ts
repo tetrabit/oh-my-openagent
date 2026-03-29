@@ -44,6 +44,7 @@ export function createRuntimeFallbackHook(
     sessionAwaitingFallbackResult: new Set(),
     sessionFallbackTimeouts: new Map(),
     sessionStatusRetryKeys: new Map(),
+    sessionTokenRefreshRetryCounts: new Map(),
   }
 
   const helpers = createAutoRetryHelpers(deps)
@@ -77,6 +78,7 @@ export function createRuntimeFallbackHook(
     deps.sessionAwaitingFallbackResult.clear()
     deps.sessionFallbackTimeouts.clear()
     deps.sessionStatusRetryKeys.clear()
+    deps.sessionTokenRefreshRetryCounts.clear()
   }
 
   return {

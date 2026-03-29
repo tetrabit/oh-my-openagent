@@ -2,7 +2,7 @@ import { createOpencode, createOpencodeClient } from "@opencode-ai/sdk"
 import pc from "picocolors"
 import type { ServerConnection } from "./types"
 import { getAvailableServerPort, isPortAvailable, DEFAULT_SERVER_PORT } from "../../shared/port-utils"
-import { withWorkingOpencodePath } from "./opencode-binary-resolver"
+import * as opencodeBinaryResolver from "./opencode-binary-resolver"
 
 function isPortStartFailure(error: unknown, port: number): boolean {
   if (!(error instanceof Error)) {
@@ -22,7 +22,7 @@ function isPortRangeExhausted(error: unknown): boolean {
 
 async function startServer(options: { signal: AbortSignal, port: number }): Promise<ServerConnection> {
   const { signal, port } = options
-  const { client, server } = await withWorkingOpencodePath(() =>
+  const { client, server } = await opencodeBinaryResolver.withWorkingOpencodePath(() =>
     createOpencode({ signal, port, hostname: "127.0.0.1" }),
   )
 

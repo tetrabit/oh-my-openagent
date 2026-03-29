@@ -1,5 +1,5 @@
 import type { FallbackEntry } from "./model-requirements"
-import { readConnectedProvidersCache } from "./connected-providers-cache"
+import * as connectedProvidersCache from "./connected-providers-cache"
 
 /**
  * Error names that indicate a retryable model error (deadstop).
@@ -52,6 +52,9 @@ const RETRYABLE_MESSAGE_PATTERNS = [
   "bad gateway",
   "unknown provider",
   "provider not found",
+  "model_not_supported",
+  "model not supported",
+  "model is not supported",
   "connection error",
   "network error",
   "timeout",
@@ -158,7 +161,19 @@ export function selectFallbackProvider(
   providers: string[],
   preferredProviderID?: string,
 ): string {
-  const connectedProviders = readConnectedProvidersCache()
+  const connectedProviders = connectedProvidersCache.readConnectedProvidersCache()
+  return selectFallbackProviderWithConnectedProviders(
+    providers,
+    preferredProviderID,
+    connectedProviders ?? undefined,
+  )
+}
+
+export function selectFallbackProviderWithConnectedProviders(
+  providers: string[],
+  preferredProviderID?: string,
+  connectedProviders?: string[],
+): string {
   if (connectedProviders) {
     const connectedSet = new Set(connectedProviders.map(p => p.toLowerCase()))
 

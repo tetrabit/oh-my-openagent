@@ -1,7 +1,11 @@
 /// <reference types="bun-types" />
 
-import { beforeEach, describe, expect, it, mock } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test"
 import type { PluginInput } from "@opencode-ai/plugin"
+import * as imageDimensionsModule from "./image-dimensions"
+import * as imageResizerModule from "./image-resizer"
+import * as sessionModelStateModule from "../../shared/session-model-state"
+import { createReadImageResizerHook } from "./hook"
 
 import type { ImageDimensions, ResizeResult } from "./types"
 
@@ -12,21 +16,6 @@ const mockGetSessionModel = mock((_sessionID: string) => ({
   providerID: "anthropic",
   modelID: "claude-sonnet-4-6",
 } as { providerID: string; modelID: string } | undefined))
-
-mock.module("./image-dimensions", () => ({
-  parseImageDimensions: mockParseImageDimensions,
-}))
-
-mock.module("./image-resizer", () => ({
-  calculateTargetDimensions: mockCalculateTargetDimensions,
-  resizeImage: mockResizeImage,
-}))
-
-mock.module("../../shared/session-model-state", () => ({
-  getSessionModel: mockGetSessionModel,
-}))
-
-import { createReadImageResizerHook } from "./hook"
 
 type ToolOutput = {
   title: string
@@ -52,11 +41,29 @@ function createInput(tool: string): { tool: string; sessionID: string; callID: s
 
 describe("createReadImageResizerHook", () => {
   beforeEach(() => {
+    mock.restore()
+    spyOn(imageDimensionsModule, "parseImageDimensions").mockImplementation(
+      (...args) => mockParseImageDimensions(...args),
+    )
+    spyOn(imageResizerModule, "calculateTargetDimensions").mockImplementation(
+      (...args) => mockCalculateTargetDimensions(...args),
+    )
+    spyOn(imageResizerModule, "resizeImage").mockImplementation(
+      (...args) => mockResizeImage(...args),
+    )
+    spyOn(sessionModelStateModule, "getSessionModel").mockImplementation(
+      (...args) => mockGetSessionModel(...args),
+    )
+
     mockParseImageDimensions.mockReset()
     mockCalculateTargetDimensions.mockReset()
     mockResizeImage.mockReset()
     mockGetSessionModel.mockReset()
     mockGetSessionModel.mockReturnValue({ providerID: "anthropic", modelID: "claude-sonnet-4-6" })
+  })
+
+  afterEach(() => {
+    mock.restore()
   })
 
   it("skips non-Read tools", async () => {

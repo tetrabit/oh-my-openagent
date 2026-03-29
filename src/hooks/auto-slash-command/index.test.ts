@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, mock, spyOn } from "bun:test"
+import { describe, expect, it, beforeEach, spyOn } from "bun:test"
 import type { LoadedSkill } from "../../features/opencode-skill-loader/types"
 import type {
   AutoSlashCommandHookInput,
@@ -6,15 +6,9 @@ import type {
   CommandExecuteBeforeInput,
   CommandExecuteBeforeOutput,
 } from "./types"
-
-// Import real shared module to avoid mock leaking to other test files
 import * as shared from "../../shared"
 
-// Spy on log instead of mocking the entire module
 const logMock = spyOn(shared, "log").mockImplementation(() => {})
-
-
-
 const { createAutoSlashCommandHook } = await import("./index")
 
 function createMockInput(sessionID: string, messageID?: string): AutoSlashCommandHookInput {

@@ -1,33 +1,9 @@
-import { describe, expect, it, mock } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import type { LoadedSkill } from "../../features/opencode-skill-loader"
-
-mock.module("../../shared", () => ({
-  resolveCommandsInText: async (content: string) => content,
-  resolveFileReferencesInText: async (content: string) => content,
-}))
-
-mock.module("../../tools/slashcommand", () => ({
-  discoverCommandsSync: () => [
-    {
-      name: "shadowed",
-      metadata: { name: "shadowed", description: "builtin" },
-      content: "builtin template",
-      scope: "builtin",
-    },
-    {
-      name: "shadowed",
-      metadata: { name: "shadowed", description: "project" },
-      content: "project template",
-      scope: "project",
-    },
-  ],
-}))
-
-mock.module("../../features/opencode-skill-loader", () => ({
-  discoverAllSkills: async (): Promise<LoadedSkill[]> => [],
-}))
-
-const { executeSlashCommand } = await import("./executor")
+import * as shared from "../../shared"
+import * as slashcommandTool from "../../tools/slashcommand"
+import * as opencodeSkillLoader from "../../features/opencode-skill-loader"
+import { executeSlashCommand } from "./executor"
 
 function createRestrictedSkill(): LoadedSkill {
   return {
@@ -43,6 +19,50 @@ function createRestrictedSkill(): LoadedSkill {
 }
 
 describe("executeSlashCommand resolution semantics", () => {
+  let resolveCommandsInTextSpy: ReturnType<typeof spyOn>
+  let resolveFileReferencesInTextSpy: ReturnType<typeof spyOn>
+  let discoverCommandsSyncSpy: ReturnType<typeof spyOn>
+  let discoverAllSkillsSpy: ReturnType<typeof spyOn>
+
+  beforeEach(() => {
+    resolveCommandsInTextSpy = spyOn(
+      shared,
+      "resolveCommandsInText",
+    ).mockImplementation(async (content: string) => content)
+    resolveFileReferencesInTextSpy = spyOn(
+      shared,
+      "resolveFileReferencesInText",
+    ).mockImplementation(async (content: string) => content)
+    discoverCommandsSyncSpy = spyOn(
+      slashcommandTool,
+      "discoverCommandsSync",
+    ).mockReturnValue([
+      {
+        name: "shadowed",
+        metadata: { name: "shadowed", description: "builtin" },
+        content: "builtin template",
+        scope: "builtin",
+      },
+      {
+        name: "shadowed",
+        metadata: { name: "shadowed", description: "project" },
+        content: "project template",
+        scope: "project",
+      },
+    ])
+    discoverAllSkillsSpy = spyOn(
+      opencodeSkillLoader,
+      "discoverAllSkills",
+    ).mockResolvedValue([])
+  })
+
+  afterEach(() => {
+    resolveCommandsInTextSpy?.mockRestore()
+    resolveFileReferencesInTextSpy?.mockRestore()
+    discoverCommandsSyncSpy?.mockRestore()
+    discoverAllSkillsSpy?.mockRestore()
+  })
+
   it("returns project command when project and builtin names collide", async () => {
     //#given
     const parsed = {

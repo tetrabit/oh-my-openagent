@@ -1,8 +1,15 @@
 /// <reference types="bun-types" />
 
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
 
-import { parseImageDimensions } from "./image-dimensions"
+let moduleImportCounter = 0
+let parseImageDimensions: typeof import("./image-dimensions").parseImageDimensions
+
+async function prepareImageDimensionsTestModule(): Promise<void> {
+  mock.restore()
+  moduleImportCounter += 1
+  ;({ parseImageDimensions } = await import(`./image-dimensions?test=${moduleImportCounter}`))
+}
 
 const PNG_1X1_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
@@ -36,6 +43,14 @@ function createLargePngDataUrl(width: number, height: number, extraBase64Chars: 
 }
 
 describe("parseImageDimensions", () => {
+  beforeEach(async () => {
+    await prepareImageDimensionsTestModule()
+  })
+
+  afterEach(() => {
+    mock.restore()
+  })
+
   it("parses PNG 1x1 dimensions", () => {
     //#given
     const dataUrl = PNG_1X1_DATA_URL

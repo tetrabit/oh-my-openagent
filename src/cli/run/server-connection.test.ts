@@ -1,8 +1,8 @@
-import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from "bun:test"
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from "bun:test"
 
 import * as originalSdk from "@opencode-ai/sdk"
 import * as originalPortUtils from "../../shared/port-utils"
-import * as originalBinaryResolver from "./opencode-binary-resolver"
+import * as opencodeBinaryResolver from "./opencode-binary-resolver"
 
 const originalConsole = globalThis.console
 
@@ -18,6 +18,7 @@ const mockIsPortAvailable = mock(() => Promise.resolve(true))
 const mockGetAvailableServerPort = mock(() => Promise.resolve({ port: 4096, wasAutoSelected: false }))
 const mockConsoleLog = mock(() => {})
 const mockWithWorkingOpencodePath = mock((startServer: () => Promise<unknown>) => startServer())
+let withWorkingOpencodePathSpy: ReturnType<typeof spyOn> | undefined
 
 mock.module("@opencode-ai/sdk", () => ({
   createOpencode: mockCreateOpencode,
@@ -30,14 +31,9 @@ mock.module("../../shared/port-utils", () => ({
   DEFAULT_SERVER_PORT: 4096,
 }))
 
-mock.module("./opencode-binary-resolver", () => ({
-  withWorkingOpencodePath: mockWithWorkingOpencodePath,
-}))
-
 afterAll(() => {
   mock.module("@opencode-ai/sdk", () => originalSdk)
   mock.module("../../shared/port-utils", () => originalPortUtils)
-  mock.module("./opencode-binary-resolver", () => originalBinaryResolver)
 })
 
 const { createServerConnection } = await import("./server-connection")
@@ -51,11 +47,16 @@ describe("createServerConnection", () => {
     mockServerClose.mockClear()
     mockConsoleLog.mockClear()
     mockWithWorkingOpencodePath.mockClear()
+    withWorkingOpencodePathSpy = spyOn(
+      opencodeBinaryResolver,
+      "withWorkingOpencodePath",
+    ).mockImplementation((startServer: () => Promise<unknown>) => mockWithWorkingOpencodePath(startServer))
     globalThis.console = { ...console, log: mockConsoleLog } as typeof console
   })
 
   afterEach(() => {
     globalThis.console = originalConsole
+    withWorkingOpencodePathSpy?.mockRestore()
   })
 
   it("attach mode returns client with no-op cleanup", async () => {

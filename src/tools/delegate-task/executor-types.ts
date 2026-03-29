@@ -6,6 +6,15 @@ export interface ExecutorContext {
   manager: BackgroundManager
   client: OpencodeClient
   directory: string
+  /**
+   * Test hook: bypass global connected providers cache reads.
+   * `null` means "cache not populated yet".
+   */
+  connectedProvidersOverride?: string[] | null
+  /**
+   * Test hook: bypass model availability discovery.
+   */
+  availableModelsOverride?: Set<string>
   userCategories?: CategoriesConfig
   gitMasterConfig?: GitMasterConfig
   sisyphusJuniorModel?: string

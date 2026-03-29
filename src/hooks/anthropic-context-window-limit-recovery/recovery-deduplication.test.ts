@@ -1,17 +1,8 @@
-import { describe, test, expect, mock, beforeEach, afterAll } from "bun:test"
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test"
 import type { PluginInput } from "@opencode-ai/plugin"
 import type { ExperimentalConfig } from "../../config"
-import * as originalDeduplicationRecovery from "./deduplication-recovery"
-
-const attemptDeduplicationRecoveryMock = mock(async () => {})
-
-mock.module("./deduplication-recovery", () => ({
-  attemptDeduplicationRecovery: attemptDeduplicationRecoveryMock,
-}))
-
-afterAll(() => {
-  mock.module("./deduplication-recovery", () => originalDeduplicationRecovery)
-})
+import * as deduplicationRecovery from "./deduplication-recovery"
+import { createAnthropicContextWindowLimitRecoveryHook } from "./recovery-hook"
 
 function createImmediateTimeouts(): () => void {
   const originalSetTimeout = globalThis.setTimeout
@@ -31,8 +22,17 @@ function createImmediateTimeouts(): () => void {
 }
 
 describe("createAnthropicContextWindowLimitRecoveryHook", () => {
+  let attemptDeduplicationRecoverySpy: ReturnType<typeof spyOn>
+
   beforeEach(() => {
-    attemptDeduplicationRecoveryMock.mockClear()
+    attemptDeduplicationRecoverySpy = spyOn(
+      deduplicationRecovery,
+      "attemptDeduplicationRecovery",
+    ).mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    attemptDeduplicationRecoverySpy?.mockRestore()
   })
 
   test("calls deduplication recovery when compaction is already in progress", async () => {
@@ -66,7 +66,6 @@ describe("createAnthropicContextWindowLimitRecoveryHook", () => {
     }
 
     try {
-      const { createAnthropicContextWindowLimitRecoveryHook } = await import("./recovery-hook")
       const ctx = { client: mockClient, directory: "/tmp" } as PluginInput
       const hook = createAnthropicContextWindowLimitRecoveryHook(ctx, { experimental })
 
@@ -87,8 +86,8 @@ describe("createAnthropicContextWindowLimitRecoveryHook", () => {
       })
 
       //#then - deduplication recovery was called for the second error
-      expect(attemptDeduplicationRecoveryMock).toHaveBeenCalledTimes(1)
-      expect(attemptDeduplicationRecoveryMock.mock.calls[0]![0]).toBe("session-96")
+      expect(attemptDeduplicationRecoverySpy).toHaveBeenCalledTimes(1)
+      expect(attemptDeduplicationRecoverySpy.mock.calls[0]![0]).toBe("session-96")
     } finally {
       if (resolveSummarize) resolveSummarize()
       restoreTimeouts()
@@ -109,7 +108,6 @@ describe("createAnthropicContextWindowLimitRecoveryHook", () => {
       },
     }
 
-    const { createAnthropicContextWindowLimitRecoveryHook } = await import("./recovery-hook")
     const ctx = { client: mockClient, directory: "/tmp" } as PluginInput
     const hook = createAnthropicContextWindowLimitRecoveryHook(ctx)
 
@@ -122,6 +120,6 @@ describe("createAnthropicContextWindowLimitRecoveryHook", () => {
     })
 
     //#then
-    expect(attemptDeduplicationRecoveryMock).not.toHaveBeenCalled()
+    expect(attemptDeduplicationRecoverySpy).not.toHaveBeenCalled()
   })
 })

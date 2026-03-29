@@ -26,6 +26,7 @@ import {
   createPreemptiveCompactionHook,
   createRuntimeFallbackHook,
   createContextWindowFallbackHook,
+  createLegacyPluginToastHook,
 } from "../../hooks"
 import { createAnthropicEffortHook } from "../../hooks/anthropic-effort"
 import {
@@ -62,6 +63,7 @@ export type SessionHooks = {
   anthropicEffort: ReturnType<typeof createAnthropicEffortHook> | null
   runtimeFallback: ReturnType<typeof createRuntimeFallbackHook> | null
   contextWindowFallback: ReturnType<typeof createContextWindowFallbackHook> | null
+  legacyPluginToast: ReturnType<typeof createLegacyPluginToastHook> | null
 }
 
 export function createSessionHooks(args: {
@@ -186,6 +188,7 @@ export function createSessionHooks(args: {
           showStartupToast: isHookEnabled("startup-toast"),
           isSisyphusEnabled: pluginConfig.sisyphus_agent?.disabled !== true,
           autoUpdate: pluginConfig.auto_update ?? true,
+          modelCapabilities: pluginConfig.model_capabilities,
         }))
     : null
 
@@ -268,6 +271,10 @@ export function createSessionHooks(args: {
     ? safeHook("context-window-fallback", () => createContextWindowFallbackHook(ctx))
     : null
 
+  const legacyPluginToast = isHookEnabled("legacy-plugin-toast")
+    ? safeHook("legacy-plugin-toast", () => createLegacyPluginToastHook(ctx))
+    : null
+
   return {
     contextWindowMonitor,
     preemptiveCompaction,
@@ -293,5 +300,6 @@ export function createSessionHooks(args: {
     anthropicEffort,
     runtimeFallback,
     contextWindowFallback,
+    legacyPluginToast,
   }
 }

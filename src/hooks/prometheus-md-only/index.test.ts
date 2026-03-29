@@ -4,15 +4,66 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { SYSTEM_DIRECTIVE_PREFIX } from "../../shared/system-directive"
-import { clearSessionAgent } from "../../features/claude-code-session-state"
-// Force stable (JSON) mode for tests that rely on message file storage
-mock.module("../../shared/opencode-storage-detection", () => ({
-  isSqliteBackend: () => false,
-  resetSqliteBackendCache: () => {},
-}))
+let moduleImportCounter = 0
+let clearSessionAgent: typeof import("../../features/claude-code-session-state").clearSessionAgent
+let createPrometheusMdOnlyHook: typeof import("./index").createPrometheusMdOnlyHook
+let MESSAGE_STORAGE: typeof import("../../features/hook-message-injector").MESSAGE_STORAGE
 
-const { createPrometheusMdOnlyHook } = await import("./index")
-const { MESSAGE_STORAGE } = await import("../../features/hook-message-injector")
+function mockModuleVariants(
+  specifier: string,
+  filePath: string,
+  moduleValue: unknown,
+): void {
+  const factory = () => moduleValue
+  mock.module(specifier, factory)
+  mock.module(new URL(filePath, import.meta.url).href, factory)
+}
+
+async function preparePrometheusMdOnlyTestModules(): Promise<void> {
+  mock.restore()
+  moduleImportCounter += 1
+
+  const sessionStateModule = await import(
+    `../../features/claude-code-session-state/index?test=${moduleImportCounter}`
+  )
+  const hookMessageInjectorModule = await import(
+    `../../features/hook-message-injector/index?test=${moduleImportCounter}`
+  )
+  const sharedSystemDirectiveModule = await import(
+    `../../shared/system-directive?test=${moduleImportCounter}`
+  )
+  const sharedAgentDisplayNamesModule = await import(
+    `../../shared/agent-display-names?test=${moduleImportCounter}`
+  )
+  const sharedLoggerModule = await import(`../../shared/logger?test=${moduleImportCounter}`)
+
+  mockModuleVariants(
+    "../../features/claude-code-session-state",
+    "../../features/claude-code-session-state/index.ts",
+    sessionStateModule,
+  )
+  mockModuleVariants("../../shared/system-directive", "../../shared/system-directive.ts", sharedSystemDirectiveModule)
+  mockModuleVariants("../../shared/agent-display-names", "../../shared/agent-display-names.ts", sharedAgentDisplayNamesModule)
+  mockModuleVariants("../../shared/logger", "../../shared/logger.ts", sharedLoggerModule)
+  mockModuleVariants("../../shared/opencode-storage-detection", "../../shared/opencode-storage-detection.ts", {
+    isSqliteBackend: () => false,
+    resetSqliteBackendCache: () => {},
+  })
+  const constantsModule = await import(`./constants?test=${moduleImportCounter}`)
+  const agentResolutionModule = await import(`./agent-resolution?test=${moduleImportCounter}`)
+  const agentMatcherModule = await import(`./agent-matcher?test=${moduleImportCounter}`)
+  const pathPolicyModule = await import(`./path-policy?test=${moduleImportCounter}`)
+  mockModuleVariants("./constants", "./constants.ts", constantsModule)
+  mockModuleVariants("./agent-resolution", "./agent-resolution.ts", agentResolutionModule)
+  mockModuleVariants("./agent-matcher", "./agent-matcher.ts", agentMatcherModule)
+  mockModuleVariants("./path-policy", "./path-policy.ts", pathPolicyModule)
+  const hookModule = await import(`./hook?test=${moduleImportCounter}`)
+  mockModuleVariants("./hook", "./hook.ts", hookModule)
+
+  ;({ clearSessionAgent } = sessionStateModule)
+  ;({ MESSAGE_STORAGE } = hookMessageInjectorModule)
+  ;({ createPrometheusMdOnlyHook } = await import(`./index?test=${moduleImportCounter}`))
+}
 
 describe("prometheus-md-only", () => {
   const TEST_SESSION_ID = "ses_test_prometheus"
@@ -40,6 +91,7 @@ describe("prometheus-md-only", () => {
 
   afterEach(() => {
     clearSessionAgent(TEST_SESSION_ID)
+    mock.restore()
     if (testMessageDir) {
       try {
         rmSync(testMessageDir, { recursive: true, force: true })
@@ -47,6 +99,10 @@ describe("prometheus-md-only", () => {
         // ignore
       }
     }
+  })
+
+  beforeEach(async () => {
+    await preparePrometheusMdOnlyTestModules()
   })
 
   describe("agent name matching", () => {
@@ -66,7 +122,7 @@ describe("prometheus-md-only", () => {
       //#when //#then
       await expect(
         hook["tool.execute.before"](input, output)
-      ).rejects.toThrow("can only write/edit .md files")
+      ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
     })
 
     test("should enforce md-only restriction for Prometheus display name Plan Builder", async () => {
@@ -85,7 +141,7 @@ describe("prometheus-md-only", () => {
       //#when //#then
       await expect(
         hook["tool.execute.before"](input, output)
-      ).rejects.toThrow("can only write/edit .md files")
+      ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
     })
 
     test("should enforce md-only restriction for Prometheus display name Planner", async () => {
@@ -104,7 +160,7 @@ describe("prometheus-md-only", () => {
       //#when //#then
       await expect(
         hook["tool.execute.before"](input, output)
-      ).rejects.toThrow("can only write/edit .md files")
+      ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
     })
 
     test("should enforce md-only restriction for uppercase PROMETHEUS", async () => {
@@ -123,7 +179,7 @@ describe("prometheus-md-only", () => {
       //#when //#then
       await expect(
         hook["tool.execute.before"](input, output)
-      ).rejects.toThrow("can only write/edit .md files")
+      ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
     })
 
     test("should not enforce restriction for non-Prometheus agent", async () => {
@@ -185,7 +241,7 @@ describe("prometheus-md-only", () => {
       // when / #then
       await expect(
         hook["tool.execute.before"](input, output)
-      ).rejects.toThrow("can only write/edit .md files")
+      ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
     })
 
     test("should allow Prometheus to write .md files inside .sisyphus/", async () => {
@@ -262,7 +318,7 @@ describe("prometheus-md-only", () => {
       // when / #then
       await expect(
         hook["tool.execute.before"](input, output)
-      ).rejects.toThrow("can only write/edit .md files inside .sisyphus/")
+      ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
     })
 
     test("should block Edit tool for non-.md files", async () => {
@@ -280,7 +336,7 @@ describe("prometheus-md-only", () => {
       // when / #then
       await expect(
         hook["tool.execute.before"](input, output)
-      ).rejects.toThrow("can only write/edit .md files")
+      ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
     })
 
     test("should allow bash commands from Prometheus", async () => {
@@ -337,7 +393,7 @@ describe("prometheus-md-only", () => {
       ).resolves.toBeUndefined()
     })
 
-    test("should inject read-only warning when Prometheus calls task", async () => {
+    test("should inject planning warning when Prometheus calls task", async () => {
       // given
       const hook = createPrometheusMdOnlyHook(createMockPluginInput())
       const input = {
@@ -353,11 +409,11 @@ describe("prometheus-md-only", () => {
       await hook["tool.execute.before"](input, output)
 
       // then
-      expect(output.args.prompt).toContain(SYSTEM_DIRECTIVE_PREFIX)
+      expect(output.args.prompt).toContain("PROMETHEUS READ-ONLY")
       expect(output.args.prompt).toContain("DO NOT modify any files")
     })
 
-    test("should inject read-only warning when Prometheus calls task", async () => {
+    test("should inject planning warning when Prometheus calls task", async () => {
       // given
       const hook = createPrometheusMdOnlyHook(createMockPluginInput())
       const input = {
@@ -373,10 +429,10 @@ describe("prometheus-md-only", () => {
       await hook["tool.execute.before"](input, output)
 
       // then
-      expect(output.args.prompt).toContain(SYSTEM_DIRECTIVE_PREFIX)
+      expect(output.args.prompt).toContain("PROMETHEUS READ-ONLY")
     })
 
-    test("should inject read-only warning when Prometheus calls call_omo_agent", async () => {
+    test("should inject planning warning when Prometheus calls call_omo_agent", async () => {
       // given
       const hook = createPrometheusMdOnlyHook(createMockPluginInput())
       const input = {
@@ -392,7 +448,7 @@ describe("prometheus-md-only", () => {
       await hook["tool.execute.before"](input, output)
 
       // then
-      expect(output.args.prompt).toContain(SYSTEM_DIRECTIVE_PREFIX)
+      expect(output.args.prompt).toContain("PROMETHEUS READ-ONLY")
     })
 
     test("should not double-inject warning if already present", async () => {
@@ -540,7 +596,7 @@ describe("prometheus-md-only", () => {
       // when / then - should block because boulder says prometheus
       await expect(
         hook["tool.execute.before"](input, output)
-      ).rejects.toThrow("can only write/edit .md files")
+      ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
     })
 
     test("should fall back to message files when session not in boulder", async () => {
@@ -573,7 +629,7 @@ describe("prometheus-md-only", () => {
       // when / then - should block because falls back to message files (prometheus)
       await expect(
         hook["tool.execute.before"](input, output)
-      ).rejects.toThrow("can only write/edit .md files")
+      ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
     })
   })
 
@@ -675,7 +731,7 @@ describe("prometheus-md-only", () => {
        // when / #then
        await expect(
          hook["tool.execute.before"](input, output)
-       ).rejects.toThrow("can only write/edit .md files inside .sisyphus/")
+       ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
      })
 
      test("should allow nested .sisyphus directories (ctx.directory may be parent)", async () => {
@@ -713,7 +769,7 @@ describe("prometheus-md-only", () => {
        // when / #then
        await expect(
          hook["tool.execute.before"](input, output)
-       ).rejects.toThrow("can only write/edit .md files inside .sisyphus/")
+       ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
      })
 
      test("should allow case-insensitive .SISYPHUS directory", async () => {
@@ -790,7 +846,7 @@ describe("prometheus-md-only", () => {
        // when / #then
        await expect(
          hook["tool.execute.before"](input, output)
-       ).rejects.toThrow("can only write/edit .md files")
+       ).rejects.toThrow("File operations restricted to .sisyphus/*.md plan files only")
      })
   })
 })

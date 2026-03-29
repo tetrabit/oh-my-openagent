@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPENCODE_DIR="$ROOT_DIR/opencode-platform/packages/opencode"
-PLUGIN_DIR="$ROOT_DIR"
+PLUGIN_DIR="$ROOT_DIR/oh-my-opencode"
 
 OPENCODE_BIN_SRC=""
 PLUGIN_DIST_SRC="$PLUGIN_DIR/dist"
@@ -130,14 +130,14 @@ write_opencode_wrapper() {
 set -euo pipefail
 export OPENCODE_DISABLE_AUTOUPDATE=1
 if [[ "\$#" -ge 1 && "\$1" == "--version" ]]; then
-  real_version="\$("${real_path}" --version)"
+  real_version="\$("$real_path" --version)"
   case "\$real_version" in
     *-nullpatch) printf '%s\n' "\$real_version" ;;
     *) printf '%s\n' "\${real_version}-nullpatch" ;;
   esac
   exit 0
 fi
-exec "${real_path}" "\$@"
+exec "$real_path" "\$@"
 EOF
   chmod 0755 "$tmp_path"
   mv -f "$tmp_path" "$wrapper_path"
@@ -340,8 +340,8 @@ try:
 except Exception:
     sys.exit(1)
 " "$CACHE_PACKAGE_JSON" "$RUNTIME_PLUGIN_VERSION" 2>/dev/null || {
-    log "Could not merge cache package.json; overwriting"
-    cat >"$CACHE_PACKAGE_JSON" <<EOF
+  log "Could not merge cache package.json; overwriting"
+  cat >"$CACHE_PACKAGE_JSON" <<EOF
 {
   "dependencies": {
     "@opencode-ai/plugin": "$RUNTIME_PLUGIN_VERSION"

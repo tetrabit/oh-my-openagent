@@ -1,17 +1,47 @@
-import { describe, expect, test, beforeEach, afterEach, spyOn } from "bun:test"
-import { createKeywordDetectorHook } from "./index"
-import { setMainSession, updateSessionAgent, clearSessionAgent, _resetForTesting } from "../../features/claude-code-session-state"
+import { describe, expect, test, beforeEach, afterEach, spyOn, mock } from "bun:test"
 import { ContextCollector } from "../../features/context-injector"
-import * as sharedModule from "../../shared"
-import * as sessionState from "../../features/claude-code-session-state"
+
+let moduleImportCounter = 0
+let createKeywordDetectorHook: typeof import("./index").createKeywordDetectorHook
+let sharedModule: typeof import("../../shared")
+let sessionState: typeof import("../../features/claude-code-session-state")
+
+async function prepareKeywordDetectorTestModules(): Promise<void> {
+  mock.restore()
+  moduleImportCounter += 1
+  sharedModule = await import(`../../shared/index?test=${moduleImportCounter}`)
+  sessionState = await import(`../../features/claude-code-session-state/index?test=${moduleImportCounter}`)
+
+  mock.module("../../shared", () => sharedModule)
+  mock.module("../../features/claude-code-session-state", () => sessionState)
+
+  ;({ createKeywordDetectorHook } = await import(`./index?test=${moduleImportCounter}`))
+}
+
+function setMainSession(sessionID: string | undefined): void {
+  sessionState.setMainSession(sessionID)
+}
+
+function updateSessionAgent(sessionID: string, agent: string): void {
+  sessionState.updateSessionAgent(sessionID, agent)
+}
+
+function clearSessionAgent(sessionID: string): void {
+  sessionState.clearSessionAgent(sessionID)
+}
+
+function _resetForTesting(): void {
+  sessionState._resetForTesting()
+}
 
 describe("keyword-detector message transform", () => {
   let logCalls: Array<{ msg: string; data?: unknown }>
   let logSpy: ReturnType<typeof spyOn>
   let getMainSessionSpy: ReturnType<typeof spyOn>
 
-  beforeEach(() => {
-    _resetForTesting()
+  beforeEach(async () => {
+    await prepareKeywordDetectorTestModules()
+    sessionState._resetForTesting()
     logCalls = []
     logSpy = spyOn(sharedModule, "log").mockImplementation((msg: string, data?: unknown) => {
       logCalls.push({ msg, data })
@@ -21,7 +51,8 @@ describe("keyword-detector message transform", () => {
   afterEach(() => {
     logSpy?.mockRestore()
     getMainSessionSpy?.mockRestore()
-    _resetForTesting()
+    sessionState._resetForTesting()
+    mock.restore()
   })
 
   function createMockPluginInput() {
@@ -101,8 +132,9 @@ describe("keyword-detector session filtering", () => {
   let logCalls: Array<{ msg: string; data?: unknown }>
   let logSpy: ReturnType<typeof spyOn>
 
-  beforeEach(() => {
-    _resetForTesting()
+  beforeEach(async () => {
+    await prepareKeywordDetectorTestModules()
+    sessionState._resetForTesting()
     logCalls = []
     logSpy = spyOn(sharedModule, "log").mockImplementation((msg: string, data?: unknown) => {
       logCalls.push({ msg, data })
@@ -111,7 +143,8 @@ describe("keyword-detector session filtering", () => {
 
   afterEach(() => {
     logSpy?.mockRestore()
-    _resetForTesting()
+    sessionState._resetForTesting()
+    mock.restore()
   })
 
   function createMockPluginInput(options: { toastCalls?: string[] } = {}) {
@@ -131,7 +164,7 @@ describe("keyword-detector session filtering", () => {
     // given - main session is set, different session submits search keyword
     const mainSessionID = "main-123"
     const subagentSessionID = "subagent-456"
-    setMainSession(mainSessionID)
+    sessionState.setMainSession(mainSessionID)
 
     const hook = createKeywordDetectorHook(createMockPluginInput())
     const output = {
@@ -154,7 +187,7 @@ describe("keyword-detector session filtering", () => {
     // given - main session is set, different session submits ultrawork keyword
     const mainSessionID = "main-123"
     const subagentSessionID = "subagent-456"
-    setMainSession(mainSessionID)
+    sessionState.setMainSession(mainSessionID)
 
     const toastCalls: string[] = []
     const hook = createKeywordDetectorHook(createMockPluginInput({ toastCalls }))
@@ -177,7 +210,7 @@ describe("keyword-detector session filtering", () => {
   test("should allow all keywords in main session", async () => {
     // given - main session submits search keyword
     const mainSessionID = "main-123"
-    setMainSession(mainSessionID)
+    sessionState.setMainSession(mainSessionID)
 
     const hook = createKeywordDetectorHook(createMockPluginInput())
     const output = {
@@ -199,7 +232,7 @@ describe("keyword-detector session filtering", () => {
 
   test("should allow all keywords when mainSessionID is not set", async () => {
     // given - no main session set (early startup or standalone mode)
-    setMainSession(undefined)
+    sessionState.setMainSession(undefined)
 
     const toastCalls: string[] = []
     const hook = createKeywordDetectorHook(createMockPluginInput({ toastCalls }))
@@ -744,5 +777,111 @@ describe("keyword-detector agent-specific ultrawork messages", () => {
     expect(textPart).toBeDefined()
     expect(textPart!.text).toBe("ultrawork plan this")
     expect(textPart!.text).not.toContain("YOU ARE A PLANNER, NOT AN IMPLEMENTER")
+  })
+})
+
+describe("keyword-detector non-OMO agent skipping", () => {
+  let logCalls: Array<{ msg: string; data?: unknown }>
+  let logSpy: ReturnType<typeof spyOn>
+
+  beforeEach(() => {
+    _resetForTesting()
+    logCalls = []
+    logSpy = spyOn(sharedModule, "log").mockImplementation((msg: string, data?: unknown) => {
+      logCalls.push({ msg, data })
+    })
+  })
+
+  afterEach(() => {
+    logSpy?.mockRestore()
+    _resetForTesting()
+  })
+
+  function createMockPluginInput() {
+    return {
+      client: {
+        tui: {
+          showToast: async () => {},
+        },
+      },
+    } as any
+  }
+
+  test("should skip all keyword injection for OpenCode-Builder agent", async () => {
+    // given - keyword-detector hook with Builder agent
+    const collector = new ContextCollector()
+    const hook = createKeywordDetectorHook(createMockPluginInput(), collector)
+    const sessionID = "builder-session"
+    const output = {
+      message: {} as Record<string, unknown>,
+      parts: [{ type: "text", text: "ultrawork search and analyze this code" }],
+    }
+
+    // when - keyword detection runs with OpenCode-Builder agent
+    await hook["chat.message"]({ sessionID, agent: "OpenCode-Builder" }, output)
+
+    // then - no keywords should be injected
+    const textPart = output.parts.find(p => p.type === "text")
+    expect(textPart).toBeDefined()
+    expect(textPart!.text).toBe("ultrawork search and analyze this code")
+  })
+
+  test("should skip all keyword injection for Plan agent", async () => {
+    // given - keyword-detector hook with Plan agent
+    const collector = new ContextCollector()
+    const hook = createKeywordDetectorHook(createMockPluginInput(), collector)
+    const sessionID = "plan-session"
+    const output = {
+      message: {} as Record<string, unknown>,
+      parts: [{ type: "text", text: "search mode analyze mode ultrawork" }],
+    }
+
+    // when - keyword detection runs with Plan agent
+    await hook["chat.message"]({ sessionID, agent: "Plan" }, output)
+
+    // then - no keywords should be injected for non-OMO Plan agent
+    const textPart = output.parts.find(p => p.type === "text")
+    expect(textPart).toBeDefined()
+    expect(textPart!.text).toBe("search mode analyze mode ultrawork")
+  })
+
+  test("should still inject keywords for OMO agents like Sisyphus", async () => {
+    // given - keyword-detector hook with Sisyphus agent
+    const collector = new ContextCollector()
+    const hook = createKeywordDetectorHook(createMockPluginInput(), collector)
+    const sessionID = "sisyphus-session-omo"
+    const output = {
+      message: {} as Record<string, unknown>,
+      parts: [{ type: "text", text: "ultrawork implement this" }],
+    }
+
+    // when - keyword detection runs with Sisyphus (OMO agent)
+    await hook["chat.message"]({ sessionID, agent: "sisyphus" }, output)
+
+    // then - keywords should be injected normally
+    const textPart = output.parts.find(p => p.type === "text")
+    expect(textPart).toBeDefined()
+    expect(textPart!.text).toContain("YOU MUST LEVERAGE ALL AVAILABLE AGENTS")
+    expect(textPart!.text).toContain("implement this")
+  })
+
+  test("should skip keyword injection for agent names containing 'builder'", async () => {
+    // given - keyword-detector hook with a builder-variant agent name
+    const collector = new ContextCollector()
+    const hook = createKeywordDetectorHook(createMockPluginInput(), collector)
+    const sessionID = "custom-builder-session"
+    const output = {
+      message: {} as Record<string, unknown>,
+      parts: [{ type: "text", text: "search this codebase" }],
+    }
+
+    // when - keyword detection runs with a builder-type agent
+    await hook["chat.message"]({ sessionID, agent: "Custom-Builder" }, output)
+
+    // then - search-mode should NOT be injected
+    const textPart = output.parts.find(p => p.type === "text")
+    expect(textPart).toBeDefined()
+    expect(textPart!.text).toBe("search this codebase")
+    expect(textPart!.text).not.toContain("[search-mode]")
   })
 })

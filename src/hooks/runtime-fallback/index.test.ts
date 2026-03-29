@@ -435,7 +435,7 @@ describe("runtime-fallback", () => {
       })
     })
 
-    test("should trigger fallback on Copilot auto-retry signal in message.updated", async () => {
+    test("should ignore Copilot provider-managed retry signals in message.updated", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.4"]),
@@ -466,15 +466,11 @@ describe("runtime-fallback", () => {
         },
       })
 
-      const signalLog = logCalls.find((c) => c.msg.includes("Detected provider auto-retry signal"))
-      expect(signalLog).toBeDefined()
-
       const fallbackLog = logCalls.find((c) => c.msg.includes("Preparing fallback"))
-      expect(fallbackLog).toBeDefined()
-      expect(fallbackLog?.data).toMatchObject({ from: "github-copilot/claude-opus-4.6", to: "openai/gpt-5.4" })
+      expect(fallbackLog).toBeUndefined()
     })
 
-    test("should trigger fallback on OpenAI auto-retry signal in message.updated", async () => {
+    test("should ignore OpenAI provider-managed retry signals in message.updated", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithCategoryFallback(["anthropic/claude-opus-4-6"]),
@@ -504,15 +500,11 @@ describe("runtime-fallback", () => {
         },
       })
 
-      const signalLog = logCalls.find((c) => c.msg.includes("Detected provider auto-retry signal"))
-      expect(signalLog).toBeDefined()
-
       const fallbackLog = logCalls.find((c) => c.msg.includes("Preparing fallback"))
-      expect(fallbackLog).toBeDefined()
-      expect(fallbackLog?.data).toMatchObject({ from: "openai/gpt-5.3-codex", to: "anthropic/claude-opus-4-6" })
+      expect(fallbackLog).toBeUndefined()
     })
 
-    test("should trigger fallback on auto-retry signal in assistant text parts", async () => {
+    test("should ignore provider-managed retry text in assistant parts", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.2"]),
@@ -547,15 +539,11 @@ describe("runtime-fallback", () => {
         },
       })
 
-      const signalLog = logCalls.find((c) => c.msg.includes("Detected provider auto-retry signal"))
-      expect(signalLog).toBeDefined()
-
       const fallbackLog = logCalls.find((c) => c.msg.includes("Preparing fallback"))
-      expect(fallbackLog).toBeDefined()
-      expect(fallbackLog?.data).toMatchObject({ from: "quotio/claude-opus-4-6", to: "openai/gpt-5.2" })
+      expect(fallbackLog).toBeUndefined()
     })
 
-    test("should trigger fallback when auto-retry text parts are nested under info.parts", async () => {
+    test("should ignore provider-managed retry text nested under info.parts", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.2"]),
@@ -590,15 +578,11 @@ describe("runtime-fallback", () => {
         },
       })
 
-      const signalLog = logCalls.find((c) => c.msg.includes("Detected provider auto-retry signal"))
-      expect(signalLog).toBeDefined()
-
       const fallbackLog = logCalls.find((c) => c.msg.includes("Preparing fallback"))
-      expect(fallbackLog).toBeDefined()
-      expect(fallbackLog?.data).toMatchObject({ from: "quotio/claude-opus-4-6", to: "openai/gpt-5.2" })
+      expect(fallbackLog).toBeUndefined()
     })
 
-    test("should trigger fallback on session.status auto-retry signal", async () => {
+    test("should keep the current model on session.status auto-retry signal", async () => {
       const promptCalls: unknown[] = []
       const hook = createRuntimeFallbackHook(
         createMockPluginInput({
@@ -648,13 +632,14 @@ describe("runtime-fallback", () => {
         },
       })
 
-      const signalLog = logCalls.find((c) => c.msg.includes("Detected provider auto-retry signal in session.status"))
+      const signalLog = logCalls.find((c) =>
+        c.msg.includes("Observed provider-managed retry in session.status; keeping current model"),
+      )
       expect(signalLog).toBeDefined()
 
       const fallbackLog = logCalls.find((c) => c.msg.includes("Preparing fallback"))
-      expect(fallbackLog).toBeDefined()
-      expect(fallbackLog?.data).toMatchObject({ from: "quotio/claude-opus-4-6", to: "openai/gpt-5.2" })
-      expect(promptCalls.length).toBe(1)
+      expect(fallbackLog).toBeUndefined()
+      expect(promptCalls.length).toBe(0)
     })
 
     test("should deduplicate session.status countdown updates for the same retry attempt", async () => {
@@ -722,7 +707,11 @@ describe("runtime-fallback", () => {
         },
       })
 
-      expect(promptCalls.length).toBe(1)
+      const retryLogs = logCalls.filter((c) =>
+        c.msg.includes("Observed provider-managed retry in session.status; keeping current model"),
+      )
+      expect(retryLogs).toHaveLength(1)
+      expect(promptCalls.length).toBe(0)
     })
 
     test("should NOT trigger fallback on auto-retry signal when timeout_seconds is 0", async () => {
@@ -1165,7 +1154,7 @@ describe("runtime-fallback", () => {
       void sessionErrorPromise
     })
 
-    test("should force advance fallback from message.updated when Copilot auto-retry signal appears during in-flight retry", async () => {
+    test("should not force advance fallback from message.updated when Copilot retries itself", async () => {
       const retriedModels: string[] = []
       const pending = new Promise<never>(() => {})
 
@@ -1243,9 +1232,7 @@ describe("runtime-fallback", () => {
         },
       })
 
-      expect(retriedModels.length).toBeGreaterThanOrEqual(2)
-      expect(retriedModels[0]).toBe("github-copilot/claude-opus-4.6")
-      expect(retriedModels[1]).toBe("anthropic/claude-opus-4-6")
+      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
 
       void sessionErrorPromise
     })
@@ -1639,7 +1626,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
     })
 
-    test("should not clear fallback timeout on assistant non-error update with Copilot retry signal", async () => {
+    test("should clear fallback timeout on assistant non-error update with Copilot retry signal", async () => {
       const retriedModels: string[] = []
 
       const hook = createRuntimeFallbackHook(
@@ -1712,10 +1699,10 @@ describe("runtime-fallback", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 60))
 
-      expect(retriedModels).toContain("openai/gpt-5.3-codex")
+      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
     })
 
-    test("should not clear fallback timeout on assistant non-error update with OpenAI retry signal", async () => {
+    test("should clear fallback timeout on assistant non-error update with OpenAI retry signal", async () => {
       const retriedModels: string[] = []
 
       const hook = createRuntimeFallbackHook(
@@ -1787,7 +1774,7 @@ describe("runtime-fallback", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 60))
 
-      expect(retriedModels).toContain("anthropic/claude-opus-4-6")
+      expect(retriedModels).toEqual(["openai/gpt-5.3-codex"])
     })
 
     test("should not clear fallback timeout on assistant non-error update without user-visible content", async () => {
@@ -2117,6 +2104,60 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toContain("anthropic/claude-opus-4-6")
     })
 
+    test("triggers fallback when message includes retry notice text plus explicit error parts", async () => {
+      const retriedModels: string[] = []
+
+      const hook = createRuntimeFallbackHook(
+        createMockPluginInput({
+          session: {
+            messages: async () => ({
+              data: [{ info: { role: "user" }, parts: [{ type: "text", text: "test" }] }],
+            }),
+            promptAsync: async (args: unknown) => {
+              const model = (args as { body?: { model?: { providerID?: string; modelID?: string } } })?.body?.model
+              if (model?.providerID && model?.modelID) {
+                retriedModels.push(`${model.providerID}/${model.modelID}`)
+              }
+              return {}
+            },
+          },
+        }),
+        {
+          config: createMockConfig({ notify_on_fallback: false }),
+          pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.4"]),
+        }
+      )
+
+      const sessionID = "test-session-mixed-retry-and-error"
+      SessionCategoryRegistry.register(sessionID, "test")
+
+      await hook.event({
+        event: {
+          type: "session.created",
+          properties: { info: { id: sessionID, model: "anthropic/claude-opus-4-6" } },
+        },
+      })
+
+      await hook.event({
+        event: {
+          type: "message.updated",
+          properties: {
+            info: {
+              sessionID,
+              role: "assistant",
+              model: "anthropic/claude-opus-4-6",
+            },
+            parts: [
+              { type: "text", text: "The usage limit has been reached [retrying in 27s attempt #6]" },
+              { type: "error", text: "Rate limit exceeded" },
+            ],
+          },
+        },
+      })
+
+      expect(retriedModels).toContain("openai/gpt-5.4")
+    })
+
     test("does NOT trigger fallback for normal type:error-free messages", async () => {
       const retriedModels: string[] = []
 
@@ -2404,7 +2445,7 @@ describe("runtime-fallback", () => {
 
       expect(promptCalls.length).toBe(1)
       const callBody = promptCalls[0]?.body as Record<string, unknown>
-      expect(callBody?.agent).toBe("prometheus")
+      expect(callBody?.agent).toBe("Prometheus (Plan Builder)")
       expect(callBody?.model).toEqual({ providerID: "github-copilot", modelID: "claude-opus-4.6" })
     })
   })

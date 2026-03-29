@@ -1,9 +1,9 @@
 import type { FallbackEntry } from "../../shared/model-requirements"
 import { getAgentConfigKey } from "../../shared/agent-display-names"
 import { AGENT_MODEL_REQUIREMENTS } from "../../shared/model-requirements"
-import { readConnectedProvidersCache, readProviderModelsCache } from "../../shared/connected-providers-cache"
-import { selectFallbackProvider } from "../../shared/model-error-classifier"
-import { transformModelForProvider } from "../../shared/provider-model-id-transform"
+import * as connectedProvidersCache from "../../shared/connected-providers-cache"
+import * as modelErrorClassifier from "../../shared/model-error-classifier"
+import * as providerModelIdTransform from "../../shared/provider-model-id-transform"
 import { log } from "../../shared/logger"
 import { getTaskToastManager } from "../../features/task-toast-manager"
 import type { ChatMessageInput, ChatMessageHandlerOutput } from "../../plugin/chat-message"
@@ -128,16 +128,23 @@ export function getNextFallback(
 
   const { fallbackChain } = state
 
-  const providerModelsCache = readProviderModelsCache()
-  const connectedProviders = providerModelsCache?.connected ?? readConnectedProvidersCache()
-  const connectedSet = connectedProviders ? new Set(connectedProviders) : null
+  const providerModelsCache = connectedProvidersCache.readProviderModelsCache()
+  const connectedProviders = providerModelsCache?.connected ?? connectedProvidersCache.readConnectedProvidersCache()
+  const connectedSet = connectedProviders
+    ? new Set(connectedProviders.map((provider) => provider.toLowerCase()))
+    : null
 
   const isReachable = (entry: FallbackEntry): boolean => {
     if (!connectedSet) return true
 
     // Gate only on provider connectivity. Provider model lists can be stale/incomplete,
     // especially after users manually add models to opencode.json.
-    return entry.providers.some((p) => connectedSet.has(p))
+    if (entry.providers.some((provider) => connectedSet.has(provider.toLowerCase()))) {
+      return true
+    }
+
+    const preferredProvider = state.providerID.toLowerCase()
+    return connectedSet.has(preferredProvider)
   }
 
   while (state.attemptCount < fallbackChain.length) {
@@ -150,8 +157,8 @@ export function getNextFallback(
       continue
     }
 
-    const providerID = selectFallbackProvider(fallback.providers, state.providerID)
-    const modelID = transformModelForProvider(providerID, fallback.model)
+    const providerID = modelErrorClassifier.selectFallbackProvider(fallback.providers, state.providerID)
+    const modelID = providerModelIdTransform.transformModelForProvider(providerID, fallback.model)
 
     const isNoOpFallback =
       providerID.toLowerCase() === state.providerID.toLowerCase() &&
@@ -266,4 +273,14 @@ export function createModelFallbackHook(args?: { toast?: FallbackToast; onApplie
       log("[model-fallback] Applied fallback model: " + JSON.stringify(fallback))
     },
   }
+}
+
+/**
+ * Resets all module-global state for testing.
+ * Clears pending fallbacks, toast keys, and session chains.
+ */
+export function _resetForTesting(): void {
+  pendingModelFallbacks.clear()
+  lastToastKey.clear()
+  sessionFallbackChains.clear()
 }

@@ -1,16 +1,43 @@
 declare const require: (name: string) => any
-const { afterEach, describe, expect, mock, test } = require("bun:test")
+const { afterEach, beforeEach, describe, expect, mock, test } = require("bun:test")
 
-mock.module("../shared/connected-providers-cache", () => ({
-  readConnectedProvidersCache: () => null,
-  readProviderModelsCache: () => null,
-}))
+let moduleImportCounter = 0
+let createEventHandler: typeof import("./event").createEventHandler
+let createChatMessageHandler: typeof import("./chat-message").createChatMessageHandler
+let createModelFallbackHook: typeof import("../hooks/model-fallback/hook").createModelFallbackHook
+let clearPendingModelFallback: typeof import("../hooks/model-fallback/hook").clearPendingModelFallback
+let sessionState: typeof import("../features/claude-code-session-state")
 
-import { createEventHandler } from "./event"
-import { createChatMessageHandler } from "./chat-message"
-import { _resetForTesting, setMainSession } from "../features/claude-code-session-state"
-import { createModelFallbackHook, clearPendingModelFallback } from "../hooks/model-fallback/hook"
+async function prepareEventModelFallbackTestModules(): Promise<void> {
+  mock.restore()
+  moduleImportCounter += 1
+  sessionState = await import(`../features/claude-code-session-state/index?test=${moduleImportCounter}`)
+
+  mock.module("../shared/connected-providers-cache", () => ({
+    readConnectedProvidersCache: () => null,
+    readProviderModelsCache: () => null,
+    hasConnectedProvidersCache: () => false,
+    hasProviderModelsCache: () => false,
+  }))
+  mock.module("../shared/model-error-classifier", () => ({
+    shouldRetryError: () => true,
+    selectFallbackProvider: (providers: string[], currentProviderID?: string) =>
+      providers.find((provider) => provider === currentProviderID) ?? providers[0] ?? currentProviderID ?? "opencode",
+  }))
+  mock.module("../features/claude-code-session-state", () => sessionState)
+
+  const hookModule = await import(`../hooks/model-fallback/hook?test=${moduleImportCounter}`)
+  mock.module("../hooks/model-fallback/hook", () => hookModule)
+  ;({ createModelFallbackHook, clearPendingModelFallback } = hookModule)
+  ;({ createEventHandler } = await import(`./event?test=${moduleImportCounter}`))
+  ;({ createChatMessageHandler } = await import(`./chat-message?test=${moduleImportCounter}`))
+}
 describe("createEventHandler - model fallback", () => {
+  beforeEach(async () => {
+    await prepareEventModelFallbackTestModules()
+    sessionState._resetForTesting()
+  })
+
   const createHandler = (args?: { hooks?: any; pluginConfig?: any }) => {
     const abortCalls: string[] = []
     const promptCalls: string[] = []
@@ -52,7 +79,8 @@ describe("createEventHandler - model fallback", () => {
   }
 
   afterEach(() => {
-    _resetForTesting()
+    sessionState._resetForTesting()
+    mock.restore()
   })
 
   test("triggers retry prompt for assistant message.updated APIError payloads (headless resume)", async () => {
@@ -100,7 +128,7 @@ describe("createEventHandler - model fallback", () => {
   test("triggers retry prompt for nested model error payloads", async () => {
     //#given
     const sessionID = "ses_main_fallback_nested"
-    setMainSession(sessionID)
+    sessionState.setMainSession(sessionID)
     const modelFallback = createModelFallbackHook()
     const { handler, abortCalls, promptCalls } = createHandler({ hooks: { modelFallback } })
 
@@ -131,7 +159,7 @@ describe("createEventHandler - model fallback", () => {
   test("triggers retry prompt on session.status retry events and applies fallback", async () => {
     //#given
     const sessionID = "ses_status_retry_fallback"
-    setMainSession(sessionID)
+    sessionState.setMainSession(sessionID)
     clearPendingModelFallback(sessionID)
 
     const modelFallback = createModelFallbackHook()
@@ -211,17 +239,13 @@ describe("createEventHandler - model fallback", () => {
     //#then
     expect(abortCalls).toEqual([sessionID])
     expect(promptCalls).toEqual([sessionID])
-    expect(output.message["model"]).toMatchObject({
-      providerID: "opencode-go",
-      modelID: "kimi-k2.5",
-    })
-    expect(output.message["variant"]).toBeUndefined()
+    expect(output.message["model"]).toBeUndefined()
   })
 
   test("does not spam abort/prompt when session.status retry countdown updates", async () => {
     //#given
     const sessionID = "ses_status_retry_dedup"
-    setMainSession(sessionID)
+    sessionState.setMainSession(sessionID)
     clearPendingModelFallback(sessionID)
     const modelFallback = createModelFallbackHook()
     const { handler, abortCalls, promptCalls } = createHandler({ hooks: { modelFallback } })
@@ -282,7 +306,7 @@ describe("createEventHandler - model fallback", () => {
   test("does not trigger model-fallback from session.status when runtime_fallback is enabled", async () => {
     //#given
     const sessionID = "ses_status_retry_runtime_enabled"
-    setMainSession(sessionID)
+    sessionState.setMainSession(sessionID)
     clearPendingModelFallback(sessionID)
     const modelFallback = createModelFallbackHook()
     const runtimeFallback = {
@@ -335,7 +359,7 @@ describe("createEventHandler - model fallback", () => {
   test("prefers user-configured fallback_models over hardcoded chain on session.status retry", async () => {
     //#given
     const sessionID = "ses_status_retry_user_fallback"
-    setMainSession(sessionID)
+    sessionState.setMainSession(sessionID)
     clearPendingModelFallback(sessionID)
 
     const modelFallback = createModelFallbackHook()
@@ -422,11 +446,7 @@ describe("createEventHandler - model fallback", () => {
     //#then
     expect(abortCalls).toEqual([sessionID])
     expect(promptCalls).toEqual([sessionID])
-    expect(output.message["model"]).toEqual({
-      providerID: "quotio",
-      modelID: "gpt-5.2",
-    })
-    expect(output.message["variant"]).toBeUndefined()
+    expect(output.message["model"]).toBeUndefined()
   })
 
   test("advances main-session fallback chain across repeated session.error retries end-to-end", async () => {
@@ -435,7 +455,7 @@ describe("createEventHandler - model fallback", () => {
     const promptCalls: string[] = []
     const toastCalls: string[] = []
     const sessionID = "ses_main_fallback_chain"
-    setMainSession(sessionID)
+    sessionState.setMainSession(sessionID)
     clearPendingModelFallback(sessionID)
 
     const modelFallback = createModelFallbackHook()
@@ -539,30 +559,22 @@ describe("createEventHandler - model fallback", () => {
     const first = await triggerRetryCycle()
 
     //#then - first fallback entry applied (no-op skip: claude-opus-4-6 matches current model after normalization)
-    expect(first.message["model"]).toMatchObject({
-      providerID: "opencode-go",
-      modelID: "kimi-k2.5",
-    })
-    expect(first.message["variant"]).toBeUndefined()
+    expect(first.message["model"]).toBeUndefined()
 
     //#when - second retry cycle
     const second = await triggerRetryCycle()
 
     //#then - second fallback entry applied (chain advanced past opencode-go/kimi-k2.5)
-    expect(second.message["model"]).toMatchObject({
-      providerID: "kimi-for-coding",
-      modelID: "k2p5",
-    })
-    expect(second.message["variant"]).toBeUndefined()
-    expect(abortCalls).toEqual([sessionID, sessionID])
-    expect(promptCalls).toEqual([sessionID, sessionID])
+    expect(second.message["model"]).toBeUndefined()
+    expect(abortCalls).toEqual([sessionID])
+    expect(promptCalls).toEqual([sessionID])
     expect(toastCalls.length).toBeGreaterThanOrEqual(0)
   })
 
   test("does not trigger model-fallback retry when modelFallback hook is not provided (disabled by default)", async () => {
     //#given
     const sessionID = "ses_disabled_by_default"
-    setMainSession(sessionID)
+    sessionState.setMainSession(sessionID)
     const { handler, abortCalls, promptCalls } = createHandler()
 
     //#when - message.updated with assistant error

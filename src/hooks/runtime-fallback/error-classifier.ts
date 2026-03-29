@@ -21,6 +21,13 @@ export function getErrorMessage(error: unknown): string {
     }
   }
 
+  const errorObj2 = error as Record<string, unknown>
+  const name = errorObj2.name
+  if (typeof name === "string" && name.length > 0) {
+    const nameColonMatch = name.match(/:\s*(.+)/)
+    if (nameColonMatch) return nameColonMatch[1].trim().toLowerCase()
+  }
+
   try {
     return JSON.stringify(error).toLowerCase()
   } catch {
@@ -105,11 +112,36 @@ export function classifyErrorType(error: unknown): string | undefined {
   }
 
   if (
+    /token\s+refresh\s+failed/i.test(message) ||
+    /token\s+exchange\s+failed/i.test(message)
+  ) {
+    if (/(?:invalid_grant|invalid_client|revoked|expired\s+refresh\s+token|reauthori[sz]e)/i.test(message)) {
+      return "token_refresh_auth_failed"
+    }
+    return "token_refresh_failed"
+  }
+
+  if (
     errorName?.includes("providermodelnotfounderror") ||
     errorName?.includes("modelnotfounderror") ||
     (errorName?.includes("unknownerror") && /model\s+not\s+found/i.test(message))
   ) {
     return "model_not_found"
+  }
+
+  if (
+    errorName?.includes("quotaexceeded") ||
+    errorName?.includes("insufficientquota") ||
+    errorName?.includes("billingerror") ||
+    /quota.?exceeded/i.test(message) ||
+    /subscription.*quota/i.test(message) ||
+    /insufficient.?quota/i.test(message) ||
+    /billing.?(?:hard.?)?limit/i.test(message) ||
+    /exhausted\s+your\s+capacity/i.test(message) ||
+    /out\s+of\s+credits?/i.test(message) ||
+    /payment.?required/i.test(message)
+  ) {
+    return "quota_exceeded"
   }
 
   return undefined
@@ -145,7 +177,7 @@ export function extractAutoRetrySignal(info: Record<string, unknown> | undefined
   const combined = candidates.join("\n")
   if (!combined) return undefined
 
-  const isAutoRetry = AUTO_RETRY_PATTERNS.every((test) => test(combined))
+  const isAutoRetry = AUTO_RETRY_PATTERNS.some((test) => test(combined))
   if (isAutoRetry) {
     return { signal: combined }
   }
@@ -177,7 +209,15 @@ export function isRetryableError(error: unknown, retryOnErrors: number[]): boole
     return true
   }
 
+  if (errorType === "token_refresh_failed" || errorType === "token_refresh_auth_failed") {
+    return true
+  }
+
   if (errorType === "model_not_found") {
+    return true
+  }
+
+  if (errorType === "quota_exceeded") {
     return true
   }
 
