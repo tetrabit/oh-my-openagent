@@ -1367,7 +1367,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
     })
 
-    test("should clear fallback timeout on assistant non-error update with Copilot retry signal", async () => {
+    test("should trigger immediate fallback on assistant non-error update with Copilot retry signal", async () => {
       const retriedModels: string[] = []
 
       const hook = createRuntimeFallbackHook(
@@ -1440,10 +1440,10 @@ describe("runtime-fallback", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 60))
 
-      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
+      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6", "openai/gpt-5.3-codex", "anthropic/claude-opus-4-6"])
     })
 
-    test("should clear fallback timeout on assistant non-error update with OpenAI retry signal", async () => {
+    test("should trigger immediate fallback on assistant non-error update with OpenAI retry signal", async () => {
       const retriedModels: string[] = []
 
       const hook = createRuntimeFallbackHook(
@@ -1515,7 +1515,7 @@ describe("runtime-fallback", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 60))
 
-      expect(retriedModels).toEqual(["openai/gpt-5.3-codex"])
+      expect(retriedModels).toEqual(["openai/gpt-5.3-codex", "anthropic/claude-opus-4-6"])
     })
 
     test("should not clear fallback timeout on assistant non-error update without user-visible content", async () => {
@@ -2923,7 +2923,7 @@ describe("runtime-fallback", () => {
   })
 
   describe("session.status retry handling", () => {
-    test("should observe provider-managed retry in session.status and keep the current model", async () => {
+    test("should trigger immediate fallback on provider-managed retry in session.status", async () => {
       const promptCalls: Array<{ body?: { agent?: string; model?: { providerID?: string; modelID?: string } } }> = []
       const abortCalls: Array<{ path?: { id?: string } }> = []
 
@@ -2987,10 +2987,10 @@ describe("runtime-fallback", () => {
         },
       })
 
-      expect(promptCalls).toHaveLength(0)
-      expect(abortCalls).toEqual([])
+      expect(promptCalls).toHaveLength(1)
+      expect(abortCalls.length).toBeGreaterThanOrEqual(1)
       const retryLog = logCalls.find((call) =>
-        call.msg.includes("Observed provider-managed retry in session.status; keeping current model")
+        call.msg.includes("Provider retry signal detected; triggering immediate fallback")
       )
       expect(retryLog?.data).toMatchObject({
         sessionID,
@@ -2998,9 +2998,13 @@ describe("runtime-fallback", () => {
         attempt: 1,
         next: 1000,
       })
+      expect(promptCalls[0]?.body?.model).toEqual({
+        providerID: "openai",
+        modelID: "gpt-5.4",
+      })
     })
 
-    test("should keep the current model when session.status retry only provides the canonical agent key", async () => {
+    test("should trigger immediate fallback on session.status retry with canonical agent key", async () => {
       const promptCalls: Array<{ body?: { agent?: string; model?: { providerID?: string; modelID?: string } } }> = []
 
       const hook = createRuntimeFallbackHook(
@@ -3073,9 +3077,9 @@ describe("runtime-fallback", () => {
         },
       })
 
-      expect(promptCalls).toHaveLength(0)
+      expect(promptCalls).toHaveLength(1)
       const retryLog = logCalls.find((call) =>
-        call.msg.includes("Observed provider-managed retry in session.status; keeping current model")
+        call.msg.includes("Provider retry signal detected; triggering immediate fallback")
       )
       expect(retryLog?.data).toMatchObject({
         sessionID,
@@ -3083,9 +3087,13 @@ describe("runtime-fallback", () => {
         attempt: 1,
         next: 1000,
       })
+      expect(promptCalls[0]?.body?.model).toEqual({
+        providerID: "openai",
+        modelID: "gpt-5.4",
+      })
     })
 
-    test("should ignore abort noise while awaiting fallback result and keep the active fallback model", async () => {
+    test("should ignore abort noise while awaiting fallback and trigger immediate fallback on retry signal", async () => {
       const promptCalls: Array<{ body?: { model?: { providerID?: string; modelID?: string } } }> = []
       const hook = createRuntimeFallbackHook(
         createMockPluginInput({
@@ -3181,14 +3189,18 @@ describe("runtime-fallback", () => {
       )
       expect(ignoredAssistantAbortLog).toBeDefined()
 
-      const awaitingRetryLog = logCalls.find((call) =>
-        call.msg.includes("Observed provider-managed retry in session.status; keeping current model")
+      const retryFallbackLog = logCalls.find((call) =>
+        call.msg.includes("Provider retry signal detected; triggering immediate fallback")
       )
-      expect(awaitingRetryLog).toBeDefined()
-      expect(promptCalls).toHaveLength(1)
+      expect(retryFallbackLog).toBeDefined()
+      expect(promptCalls).toHaveLength(2)
       expect(promptCalls[0]?.body?.model).toEqual({
         providerID: "provider-a",
         modelID: "model-a",
+      })
+      expect(promptCalls[1]?.body?.model).toEqual({
+        providerID: "provider-b",
+        modelID: "model-b",
       })
     })
   })
