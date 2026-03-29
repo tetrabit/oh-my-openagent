@@ -12,7 +12,7 @@ OPENCODE_BIN_DST="$HOME/.opencode/bin/opencode"
 CACHE_PLUGIN_DST="$HOME/.cache/opencode/node_modules/oh-my-opencode"
 LOCAL_PLUGIN_DST="$HOME/.opencode/node_modules/oh-my-opencode"
 : "${OPENCODE_UPSTREAM_REPO:=https://github.com/tetrabit/opencode.git}"
-: "${OPENCODE_UPSTREAM_BRANCH:=main}"
+: "${OPENCODE_UPSTREAM_BRANCH:=dev}"
 USER_CONFIG_SRC="$ROOT_DIR/oh-my-opencode.json"
 USER_CONFIG_DST="$HOME/.config/opencode/oh-my-opencode.json"
 
@@ -32,7 +32,7 @@ Options:
   --with-config  Also overwrite ~/.config/opencode/oh-my-opencode.json.
   --help         Show this help message.
 Notes:
-  - By default this script syncs opencode-platform/ from tetrabit/opencode (main).
+  - By default this script syncs opencode-platform/ from tetrabit/opencode (dev).
   - By default this script does NOT modify files under ~/.config/opencode.
   - It overwrites ~/.opencode/bin/opencode and plugin dist directories.
 EOF

@@ -8,7 +8,7 @@ NODE_VERSION="lts/*"       # "lts/*" | "22" | specific version
 OMO_CONFIG_DST="$HOME/.config/opencode/oh-my-opencode.json"
 
 : "${OMO_REPO_URL:=https://github.com/tetrabit/oh-my-openagent.git}"
-: "${OMO_REPO_REF:=main}"
+: "${OMO_REPO_REF:=dev}"
 
 # ---------------------------------------------------------------------------
 # Flags
