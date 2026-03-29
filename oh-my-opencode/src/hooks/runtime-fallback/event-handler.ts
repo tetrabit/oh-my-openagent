@@ -254,22 +254,67 @@ export function createEventHandler(deps: HookDeps, helpers: AutoRetryHelpers) {
     }
 
     const retryMessage = typeof status.message === "string" ? status.message : ""
-    const wasAwaitingFallbackResult = sessionAwaitingFallbackResult.has(sessionID)
-    if (wasAwaitingFallbackResult) {
-      helpers.clearSessionFallbackTimeout(sessionID)
+    helpers.clearSessionFallbackTimeout(sessionID)
+    sessionAwaitingFallbackResult.delete(sessionID)
+    sessionLastAccess.set(sessionID, Date.now())
+
+    const state = sessionStates.get(sessionID)
+    const resolvedAgent = await helpers.resolveAgentForSessionFromContext(sessionID)
+    const fallbackModels = getFallbackModelsForSession(sessionID, resolvedAgent, pluginConfig)
+
+    if (fallbackModels.length === 0) {
+      log(`[${HOOK_NAME}] Provider retry signal observed but no fallback models configured; ignoring`, {
+        sessionID,
+        model: state?.currentModel ?? (props?.model as string | undefined),
+        attempt: status.attempt,
+        message: retryMessage,
+      })
+      return
     }
 
-    sessionLastAccess.set(sessionID, Date.now())
-    const state = sessionStates.get(sessionID)
+    if (!state) {
+      const currentModel = props?.model as string | undefined
+      if (!currentModel) {
+        log(`[${HOOK_NAME}] Provider retry signal but no model state; cannot fallback`, { sessionID })
+        return
+      }
+      sessionStates.set(sessionID, createFallbackState(currentModel))
+    }
 
-    log(`[${HOOK_NAME}] Observed provider-managed retry in session.status; keeping current model`, {
+    const currentState = sessionStates.get(sessionID)!
+
+    log(`[${HOOK_NAME}] Provider retry signal detected; triggering immediate fallback`, {
       sessionID,
-      model: state?.currentModel ?? (props?.model as string | undefined),
+      model: currentState.currentModel,
       attempt: status.attempt,
       next: status.next,
       message: retryMessage,
-      awaitingFallbackResult: wasAwaitingFallbackResult,
     })
+
+    await helpers.abortSessionRequest(sessionID, "session.status.retry")
+
+    const result = prepareFallback(sessionID, currentState, fallbackModels, config)
+    if (result.success && result.newModel) {
+      if (config.notify_on_fallback) {
+        await deps.ctx.client.tui
+          .showToast({
+            body: {
+              title: "Model Fallback",
+              message: `Provider retrying; switching to ${result.newModel?.split("/").pop() || result.newModel}`,
+              variant: "warning",
+              duration: 5000,
+            },
+          })
+          .catch(() => {})
+      }
+      await helpers.autoRetryWithFallback(sessionID, result.newModel, resolvedAgent, "session.status.retry")
+    } else {
+      log(`[${HOOK_NAME}] Fallback preparation failed on retry signal`, {
+        sessionID,
+        error: result.error,
+        maxAttemptsReached: result.maxAttemptsReached,
+      })
+    }
   }
 
   return async ({ event }: { event: { type: string; properties?: unknown } }) => {

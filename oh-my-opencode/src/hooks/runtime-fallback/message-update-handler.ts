@@ -153,10 +153,61 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
 
       if (retrySignal) {
         helpers.clearSessionFallbackTimeout(sessionID)
-        log(`[${HOOK_NAME}] Provider-managed retry observed; suspended fallback timeout`, {
+        sessionAwaitingFallbackResult.delete(sessionID)
+
+        const agent = info?.agent as string | undefined
+        const resolvedAgent = await helpers.resolveAgentForSessionFromContext(sessionID, agent)
+        const fallbackModels = getFallbackModelsForSession(sessionID, resolvedAgent, pluginConfig)
+
+        if (fallbackModels.length === 0) {
+          log(`[${HOOK_NAME}] Provider retry signal in assistant message but no fallback models; ignoring`, {
+            sessionID,
+            model,
+          })
+          return
+        }
+
+        let state = sessionStates.get(sessionID)
+        if (!state && model) {
+          state = createFallbackState(model)
+          sessionStates.set(sessionID, state)
+          sessionLastAccess.set(sessionID, Date.now())
+        }
+
+        if (!state) {
+          log(`[${HOOK_NAME}] Provider retry signal but no model state; cannot fallback`, { sessionID })
+          return
+        }
+
+        log(`[${HOOK_NAME}] Provider retry signal in assistant message; triggering immediate fallback`, {
           sessionID,
           model,
         })
+
+        await helpers.abortSessionRequest(sessionID, "message.updated.retry-signal")
+
+        const result = prepareFallback(sessionID, state, fallbackModels, config)
+        if (result.success && result.newModel) {
+          if (config.notify_on_fallback) {
+            await deps.ctx.client.tui
+              .showToast({
+                body: {
+                  title: "Model Fallback",
+                  message: `Provider retrying; switching to ${result.newModel?.split("/").pop() || result.newModel}`,
+                  variant: "warning",
+                  duration: 5000,
+                },
+              })
+              .catch(() => {})
+          }
+          await helpers.autoRetryWithFallback(sessionID, result.newModel, resolvedAgent, "message.updated.retry-signal")
+        } else {
+          log(`[${HOOK_NAME}] Fallback preparation failed on retry signal in assistant message`, {
+            sessionID,
+            error: result.error,
+            maxAttemptsReached: result.maxAttemptsReached,
+          })
+        }
         return
       }
 
@@ -191,10 +242,61 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
       const wasAwaitingFallbackResult = sessionAwaitingFallbackResult.has(sessionID)
       if (retrySignal) {
         helpers.clearSessionFallbackTimeout(sessionID)
-        log(`[${HOOK_NAME}] Provider-managed retry observed in message.updated; not triggering fallback`, {
+        sessionAwaitingFallbackResult.delete(sessionID)
+
+        const agent = info?.agent as string | undefined
+        const resolvedAgent = await helpers.resolveAgentForSessionFromContext(sessionID, agent)
+        const fallbackModels = getFallbackModelsForSession(sessionID, resolvedAgent, pluginConfig)
+
+        if (fallbackModels.length === 0) {
+          log(`[${HOOK_NAME}] Provider retry signal in error message but no fallback models; ignoring`, {
+            sessionID,
+            model,
+          })
+          return
+        }
+
+        let retryState = sessionStates.get(sessionID)
+        if (!retryState && model) {
+          retryState = createFallbackState(model)
+          sessionStates.set(sessionID, retryState)
+          sessionLastAccess.set(sessionID, Date.now())
+        }
+
+        if (!retryState) {
+          log(`[${HOOK_NAME}] Provider retry signal in error but no model state; cannot fallback`, { sessionID })
+          return
+        }
+
+        log(`[${HOOK_NAME}] Provider retry signal in error message; triggering immediate fallback`, {
           sessionID,
           model,
         })
+
+        await helpers.abortSessionRequest(sessionID, "message.updated.error.retry-signal")
+
+        const result = prepareFallback(sessionID, retryState, fallbackModels, config)
+        if (result.success && result.newModel) {
+          if (config.notify_on_fallback) {
+            await deps.ctx.client.tui
+              .showToast({
+                body: {
+                  title: "Model Fallback",
+                  message: `Provider retrying; switching to ${result.newModel?.split("/").pop() || result.newModel}`,
+                  variant: "warning",
+                  duration: 5000,
+                },
+              })
+              .catch(() => {})
+          }
+          await helpers.autoRetryWithFallback(sessionID, result.newModel, resolvedAgent, "message.updated.error.retry-signal")
+        } else {
+          log(`[${HOOK_NAME}] Fallback preparation failed on retry signal in error message`, {
+            sessionID,
+            error: result.error,
+            maxAttemptsReached: result.maxAttemptsReached,
+          })
+        }
         return
       }
 
