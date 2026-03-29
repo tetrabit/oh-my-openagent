@@ -34,6 +34,7 @@ export const AGENT_MODEL_REQUIREMENTS: Record<string, ModelRequirement> = {
         model: "kimi-k2.5",
       },
       { providers: ["openai", "github-copilot", "opencode"], model: "gpt-5.4", variant: "medium" },
+      { providers: ["google", "github-copilot", "opencode"], model: "gemini-3.1-pro" },
       { providers: ["zai-coding-plan", "opencode"], model: "glm-5" },
       { providers: ["opencode"], model: "big-pickle" },
     ],
