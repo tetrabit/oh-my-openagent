@@ -24,6 +24,7 @@ const NON_RETRYABLE_ERROR_NAMES = new Set([
   "messageabortederror",
   "permissiondeniederror",
   "contextlengtherror",
+  "contextoverflowerror",
   "timeouterror",
   "validationerror",
   "syntaxerror",

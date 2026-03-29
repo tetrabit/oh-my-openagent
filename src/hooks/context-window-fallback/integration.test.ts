@@ -175,4 +175,63 @@ describe("context-window-fallback integration", () => {
       query: { directory: "/tmp/project" },
     });
   });
+
+  test("switches model for subagent sessions on session.error context-overflow event", async () => {
+    // #given
+    const ctx = {
+      directory: "/tmp/project",
+      client: {
+        session: {
+          messages: mock(async () => ({ data: [] })),
+          promptAsync: promptAsyncMock,
+        },
+        tui: {
+          showToast: showToastMock,
+        },
+      },
+    } as unknown as Parameters<typeof createContextWindowFallbackHook>[0];
+
+    const hook = createContextWindowFallbackHook(ctx);
+    const subagentSessionID = "subagent-context-overflow-1";
+    sessionState.subagentSessions.add(subagentSessionID);
+    sessionState.updateSessionAgent(subagentSessionID, "hephaestus");
+
+    const eventInput = {
+      event: {
+        type: "session.error",
+        properties: {
+          sessionID: subagentSessionID,
+          error: {
+            name: "ContextOverflowError",
+            data: {
+              message: "This message would exceed the model context window",
+              currentTokens: 245000,
+              maxTokens: 200000,
+              providerID: "anthropic",
+              modelID: "claude-opus-4-6",
+            },
+          },
+        },
+      },
+    };
+
+    // #when
+    const handled = await hook.event(eventInput);
+
+    // #then
+    expect(handled).toBe(true);
+    expect(showToastMock).toHaveBeenCalledTimes(1);
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1);
+    expect(promptAsyncMock).toHaveBeenCalledWith({
+      path: { id: subagentSessionID },
+      body: {
+        auto: true,
+        model: {
+          providerID: "openai",
+          modelID: "gpt-5.2",
+        },
+      },
+      query: { directory: "/tmp/project" },
+    });
+  });
 });
