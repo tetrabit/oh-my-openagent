@@ -14,6 +14,7 @@ import { createFallbackState } from "./fallback-state"
 import { getFallbackModelsForSession } from "./fallback-models"
 import { resolveFallbackBootstrapModel } from "./fallback-bootstrap-model"
 import { dispatchFallbackRetry } from "./fallback-retry-dispatcher"
+import { dispatchFallbackOnRetrySignal } from "./retry-signal-fallback"
 import { hasVisibleAssistantResponse, inspectAssistantResponseActivity } from "./visible-assistant-response"
 
 export { hasVisibleAssistantResponse, inspectAssistantResponseActivity } from "./visible-assistant-response"
@@ -64,9 +65,11 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
 
       if (retrySignal) {
         helpers.clearSessionFallbackTimeout(sessionID)
-        log(`[${HOOK_NAME}] Provider-managed retry observed; suspended fallback timeout`, {
+        await dispatchFallbackOnRetrySignal(deps, helpers, {
           sessionID,
           model,
+          agent: info?.agent as string | undefined,
+          source: "message.updated",
         })
         return
       }
@@ -100,9 +103,11 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
       const wasAwaitingFallbackResult = sessionAwaitingFallbackResult.has(sessionID)
       if (retrySignal && !hasStructuredMessageError) {
         helpers.clearSessionFallbackTimeout(sessionID)
-        log(`[${HOOK_NAME}] Provider-managed retry observed in message.updated; not triggering fallback`, {
+        await dispatchFallbackOnRetrySignal(deps, helpers, {
           sessionID,
           model,
+          agent: info?.agent as string | undefined,
+          source: "message.updated",
         })
         return
       }

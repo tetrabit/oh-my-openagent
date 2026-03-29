@@ -4,6 +4,7 @@ import { HOOK_NAME, RETRYABLE_ERROR_PATTERNS } from "./constants"
 import { log } from "../../shared/logger"
 import { extractAutoRetrySignal } from "./error-classifier"
 import { normalizeRetryStatusMessage, extractRetryAttempt } from "../../shared/retry-status-utils"
+import { dispatchFallbackOnRetrySignal } from "./retry-signal-fallback"
 
 export function createSessionStatusHandler(
   deps: HookDeps,
@@ -40,19 +41,14 @@ export function createSessionStatusHandler(
     }
     sessionStatusRetryKeys.set(sessionID, retryKey)
 
-    const awaitingFallbackResult = sessionAwaitingFallbackResult.has(sessionID)
-    if (awaitingFallbackResult) {
-      helpers.clearSessionFallbackTimeout(sessionID)
-    }
-
+    helpers.clearSessionFallbackTimeout(sessionID)
     sessionLastAccess.set(sessionID, Date.now())
-    const state = sessionStates.get(sessionID)
 
-    log(`[${HOOK_NAME}] Observed provider-managed retry in session.status; keeping current model`, {
+    await dispatchFallbackOnRetrySignal(deps, helpers, {
       sessionID,
-      model: state?.currentModel ?? model,
-      retryAttempt: status.attempt,
-      awaitingFallbackResult,
+      model,
+      agent: undefined,
+      source: "session.status",
     })
   }
 }
