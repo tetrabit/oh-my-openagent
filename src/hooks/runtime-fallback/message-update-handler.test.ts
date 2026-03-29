@@ -191,23 +191,32 @@ describe("createMessageUpdateHandler", () => {
     expect(state.pendingFallbackModel).toBe(undefined)
   })
 
-  it("#given a provider-managed retry notice while awaiting fallback #when an assistant update arrives #then the timeout is suspended without another fallback", async () => {
+  it("#given a provider-managed retry notice while awaiting fallback #when an assistant update arrives #then immediate fallback is triggered", async () => {
     // given
     const sessionID = "assistant-provider-retry"
+    SessionCategoryRegistry.register(sessionID, "test")
     const deps = createDeps({
       data: [{ info: { role: "user" }, parts: [{ type: "text", text: "run the task" }] }],
     })
+    deps.pluginConfig = {
+      categories: {
+        test: {
+          fallback_models: ["openai/gpt-5.4", "google/gemini-2.5-pro"],
+        },
+      },
+    }
     const clearCalls: string[] = []
     const retryCalls: Array<{ sessionID: string; model: string; source: string }> = []
     const state = createFallbackState("anthropic/claude-opus-4-6")
     state.currentModel = "openai/gpt-5.4"
+    state.fallbackIndex = 0
+    state.attemptCount = 1
     state.pendingFallbackModel = "openai/gpt-5.4"
+    state.failedModels.set("anthropic/claude-opus-4-6", Date.now())
     deps.sessionStates.set(sessionID, state)
     deps.sessionAwaitingFallbackResult.add(sessionID)
     deps.sessionFallbackTimeouts.set(sessionID, 1)
     const handler = createMessageUpdateHandler(deps, createHelpers(deps, clearCalls, retryCalls))
-
-    // when
     await handler({
       info: {
         sessionID,
@@ -216,12 +225,12 @@ describe("createMessageUpdateHandler", () => {
         status: "The usage limit has been reached [retrying in 27s attempt #6]",
       },
     })
-
     // then
     expect(clearCalls).toEqual([sessionID])
-    expect(retryCalls).toEqual([])
-    expect(deps.sessionAwaitingFallbackResult.has(sessionID)).toBe(true)
-    expect(state.pendingFallbackModel).toBe("openai/gpt-5.4")
+    expect(retryCalls).toEqual([
+      { sessionID, model: "google/gemini-2.5-pro", source: "message.updated" },
+    ])
+    expect(state.currentModel).toBe("google/gemini-2.5-pro")
   })
 
   it("#given an anthropic token refresh failure in assistant output #when message.updated arrives #then the handler retries the current model before fallback", async () => {

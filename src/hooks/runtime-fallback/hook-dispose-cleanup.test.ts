@@ -30,7 +30,7 @@ describe("createRuntimeFallbackHook dispose retry-key cleanup", () => {
     SessionCategoryRegistry.clear()
   })
 
-  it("#given a session.status retry key #when dispose() is called #then the same retry event is not deduplicated afterward", async () => {
+  it("#given a session.status retry key #when dispose() is called #then the same retry event triggers fallback again afterward", async () => {
     // given
     const promptCalls: unknown[] = []
     const logCalls: Array<{ msg: string; data?: unknown }> = []
@@ -79,7 +79,7 @@ describe("createRuntimeFallbackHook dispose retry-key cleanup", () => {
     }
 
     await hook.event(retryEvent)
-    expect(promptCalls).toHaveLength(0)
+    expect(promptCalls.length).toBeGreaterThanOrEqual(1)
 
     // when
     hook.dispose?.()
@@ -93,7 +93,7 @@ describe("createRuntimeFallbackHook dispose retry-key cleanup", () => {
 
     // then
     const retryLogs = logCalls.filter((call) =>
-      call.msg.includes("Observed provider-managed retry in session.status; keeping current model"),
+      call.msg.includes("Provider retry detected; triggering immediate fallback"),
     )
     expect(retryLogs).toHaveLength(2)
     logSpy.mockRestore()

@@ -582,7 +582,7 @@ describe("runtime-fallback", () => {
       expect(fallbackLog).toBeUndefined()
     })
 
-    test("should keep the current model on session.status auto-retry signal", async () => {
+    test("should trigger immediate fallback on session.status auto-retry signal", async () => {
       const promptCalls: unknown[] = []
       const hook = createRuntimeFallbackHook(
         createMockPluginInput({
@@ -633,13 +633,10 @@ describe("runtime-fallback", () => {
       })
 
       const signalLog = logCalls.find((c) =>
-        c.msg.includes("Observed provider-managed retry in session.status; keeping current model"),
+        c.msg.includes("Provider retry detected; triggering immediate fallback"),
       )
       expect(signalLog).toBeDefined()
-
-      const fallbackLog = logCalls.find((c) => c.msg.includes("Preparing fallback"))
-      expect(fallbackLog).toBeUndefined()
-      expect(promptCalls.length).toBe(0)
+      expect(promptCalls.length).toBeGreaterThanOrEqual(1)
     })
 
     test("should deduplicate session.status countdown updates for the same retry attempt", async () => {
@@ -708,10 +705,10 @@ describe("runtime-fallback", () => {
       })
 
       const retryLogs = logCalls.filter((c) =>
-        c.msg.includes("Observed provider-managed retry in session.status; keeping current model"),
+        c.msg.includes("Provider retry detected; triggering immediate fallback"),
       )
       expect(retryLogs).toHaveLength(1)
-      expect(promptCalls.length).toBe(0)
+      expect(promptCalls.length).toBe(1)
     })
 
     test("should NOT trigger fallback on auto-retry signal when timeout_seconds is 0", async () => {
@@ -1626,7 +1623,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
     })
 
-    test("should clear fallback timeout on assistant non-error update with Copilot retry signal", async () => {
+    test("should trigger immediate fallback on assistant non-error update with Copilot retry signal", async () => {
       const retriedModels: string[] = []
 
       const hook = createRuntimeFallbackHook(
@@ -1699,10 +1696,10 @@ describe("runtime-fallback", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 60))
 
-      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6"])
+      expect(retriedModels).toEqual(["github-copilot/claude-opus-4.6", "openai/gpt-5.3-codex", "anthropic/claude-opus-4-6"])
     })
 
-    test("should clear fallback timeout on assistant non-error update with OpenAI retry signal", async () => {
+    test("should trigger immediate fallback on assistant non-error update with OpenAI retry signal", async () => {
       const retriedModels: string[] = []
 
       const hook = createRuntimeFallbackHook(
@@ -1774,7 +1771,7 @@ describe("runtime-fallback", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 60))
 
-      expect(retriedModels).toEqual(["openai/gpt-5.3-codex"])
+      expect(retriedModels).toEqual(["openai/gpt-5.3-codex", "anthropic/claude-opus-4-6"])
     })
 
     test("should not clear fallback timeout on assistant non-error update without user-visible content", async () => {
