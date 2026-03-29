@@ -134,6 +134,13 @@ export function createAutoRetryHelpers(deps: HookDeps) {
       const result = prepareFallback(sessionID, state, fallbackModels, config)
       if (result.success && result.newModel) {
         await autoRetryWithFallback(sessionID, result.newModel, resolvedAgent, "session.timeout")
+      } else {
+        sessionAwaitingFallbackResult.delete(sessionID)
+        log(`[${HOOK_NAME}] Fallback preparation failed after timeout; cleared awaiting state`, {
+          sessionID,
+          error: result.error,
+          maxAttemptsReached: result.maxAttemptsReached,
+        })
       }
     }, timeoutMs)
 
